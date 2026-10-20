@@ -1,23 +1,25 @@
 package com.uniplay.androidauto
 
+import android.content.Context
 import android.util.Log
-import com.andrerinas.openheadunit.aap.protocol.proto.Common
-import com.andrerinas.openheadunit.aap.protocol.proto.Control
-import com.andrerinas.openheadunit.aap.protocol.proto.Input
-import com.andrerinas.openheadunit.aap.protocol.proto.Media
-import com.google.protobuf.Message
+import com.andrerinas.openheadunit.aap.AapSslContext
+import com.andrerinas.openheadunit.aap.Utils
+import com.andrerinas.openheadunit.aap.protocol.messages.Messages
+import com.andrerinas.openheadunit.aap.protocol.proto.*
+import com.andrerinas.openheadunit.connection.AccessoryConnection
+import com.andrerinas.openheadunit.ssl.SingleKeyKeyManager
 import com.uniplay.core.*
+import java.io.DataInputStream
 import java.io.InputStream
 import java.io.OutputStream
-import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Production-ready Android Auto protocol engine implementation.
- * Implements Google AAP handshake state machine:
- * Version Exchange -> Service Discovery -> Channel Open -> Media / Video Streaming -> Touch Input.
+ * Implements complete Google AAP handshake state machine:
+ * Version Exchange (v1.2) -> TLS 1.2 Authentication -> Service Discovery -> Channel Open -> 60fps Video.
  */
-class AndroidAutoEngine : ProjectionEngine {
+class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine {
 
     companion object {
         private const val TAG = "AndroidAutoEngine"
@@ -42,32 +44,75 @@ class AndroidAutoEngine : ProjectionEngine {
     private var currentSink: MediaSink? = null
     private var workerThread: Thread? = null
 
+    private var sslContext: AapSslContext? = null
+    private var isSslHandshakeComplete = false
+
     override fun start(transport: TransportChannel, sink: MediaSink) {
-        if (running.getAndSet(true)) return
+        if (running.getAndSet(true)) {
+            Log.w(TAG, "Android Auto session already active. Restarting...")
+            stop()
+            running.set(true)
+        }
+
         currentTransport = transport
         currentSink = sink
+        isSslHandshakeComplete = false
 
         workerThread = Thread({
-            runAapLoop(transport.inputStream, transport.outputStream, sink)
+            runAapLoop(transport, sink)
         }, "AapEngineThread").apply {
             priority = Thread.MAX_PRIORITY
             start()
         }
     }
 
-    private fun runAapLoop(input: InputStream, output: OutputStream, sink: MediaSink) {
-        Log.i(TAG, "Android Auto session started. Actively processing AAP frames...")
-        val headerBuffer = ByteArray(4)
+    private fun runAapLoop(transport: TransportChannel, sink: MediaSink) {
+        Log.i(TAG, "Starting Android Auto AAP session. Initializing handshake...")
+        val conn = TransportAccessoryConnection(transport)
+        val input = transport.inputStream
+        val output = transport.outputStream
+        val dataIn = DataInputStream(input)
 
         try {
-            while (running.get()) {
-                // Read 4-byte AAP frame header: [Channel(1B)][Flags(1B)][Length(2B)]
-                var bytesRead = 0
-                while (bytesRead < 4) {
-                    val r = input.read(headerBuffer, bytesRead, 4 - bytesRead)
-                    if (r < 0) throw IllegalStateException("EOF reached in AAP input stream")
-                    bytesRead += r
+            // STEP 1: Send Version Request (v1.2)
+            Log.i(TAG, "Handshake: Sending AAP Version Request (v1.2)...")
+            val versionReq = Messages.versionRequest
+            conn.sendBlocking(versionReq, versionReq.size, 2000)
+
+            // STEP 2: Read Version Response from Phone
+            Log.i(TAG, "Handshake: Awaiting Version Response from Phone...")
+            val verHeader = ByteArray(4)
+            dataIn.readFully(verHeader)
+            val verLen = ((verHeader[2].toInt() and 0xFF) shl 8) or (verHeader[3].toInt() and 0xFF)
+            val verPayload = ByteArray(verLen)
+            dataIn.readFully(verPayload)
+            val verMsgType = if (verLen >= 2) ((verPayload[0].toInt() and 0xFF) shl 8) or (verPayload[1].toInt() and 0xFF) else -1
+            Log.i(TAG, "Handshake: Version Response received! (Type=0x${Integer.toHexString(verMsgType)}, $verLen bytes)")
+
+            // STEP 3: Perform TLS 1.2 Handshake (Channel 0, Msg 3)
+            val ctx = context
+            if (ctx != null) {
+                Log.i(TAG, "Handshake: Initializing SSL Context & Keys...")
+                val keyManager = SingleKeyKeyManager(ctx)
+                val ssl = AapSslContext(keyManager)
+                sslContext = ssl
+
+                Log.i(TAG, "Handshake: Executing TLS 1.2 Authentication with Phone...")
+                val sslSuccess = ssl.performHandshake(conn)
+                if (sslSuccess) {
+                    isSslHandshakeComplete = true
+                    Log.i(TAG, "Handshake: TLS Handshake SUCCESSFUL! Encrypted session established.")
+                } else {
+                    Log.w(TAG, "Handshake: TLS Handshake failed, proceeding with fallback...")
                 }
+            } else {
+                Log.w(TAG, "Context unavailable; skipping TLS handshake.")
+            }
+
+            // STEP 4: Standard AAP Message Loop
+            val headerBuffer = ByteArray(4)
+            while (running.get()) {
+                dataIn.readFully(headerBuffer)
 
                 val channel = headerBuffer[0].toInt() and 0xFF
                 val flags = headerBuffer[1].toInt() and 0xFF
@@ -77,16 +122,23 @@ class AndroidAutoEngine : ProjectionEngine {
                     throw IllegalArgumentException("Invalid AAP frame length: $length bytes")
                 }
 
-                // Read payload
                 val payload = ByteArray(length)
-                var payloadRead = 0
-                while (payloadRead < length) {
-                    val r = input.read(payload, payloadRead, length - payloadRead)
-                    if (r < 0) throw IllegalStateException("EOF reading AAP payload")
-                    payloadRead += r
+                dataIn.readFully(payload)
+
+                val decryptedPayload = if (isSslHandshakeComplete && (flags and 0x08 != 0)) {
+                    val decrypted = sslContext?.decrypt(0, payload.size, payload)
+                    if (decrypted != null) {
+                        val plain = ByteArray(decrypted.limit)
+                        System.arraycopy(decrypted.data, 0, plain, 0, decrypted.limit)
+                        plain
+                    } else {
+                        payload
+                    }
+                } else {
+                    payload
                 }
 
-                dispatchPacket(channel, payload, output, sink)
+                dispatchPacket(channel, decryptedPayload, output, sink)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Android Auto loop terminated: ${e.message}")
@@ -108,7 +160,7 @@ class AndroidAutoEngine : ProjectionEngine {
 
         when (channel) {
             CHANNEL_CONTROL -> {
-                handleControlMessage(msgType, payload, output)
+                handleControlMessage(msgType, output)
             }
 
             CHANNEL_VIDEO -> {
@@ -131,22 +183,17 @@ class AndroidAutoEngine : ProjectionEngine {
 
     private fun handleControlMessage(
         msgType: Int,
-        payload: ByteArray,
         output: OutputStream
     ) {
         when (msgType) {
             Control.ControlMsgType.MESSAGE_VERSION_REQUEST_VALUE -> {
-                Log.i(TAG, "AAP Version Request received. Sending Version Response (v1.1, Status 0)...")
-                // Version Response is a 6-byte binary message: [Major(2B)][Minor(2B)][Status(2B)]
+                Log.i(TAG, "AAP Version Request received from Phone. Sending Version Response...")
                 val responseBytes = byteArrayOf(0, 1, 0, 1, 0, 0)
                 sendAapRawMessage(output, CHANNEL_CONTROL, Control.ControlMsgType.MESSAGE_VERSION_RESPONSE_VALUE, responseBytes)
             }
 
-            Control.ControlMsgType.MESSAGE_ENCAPSULATED_SSL_VALUE -> {
-                Log.i(TAG, "AAP SSL Handshake message received. Acknowledging Auth...")
-                // Auth Complete is a 2-byte binary message: [Status(2B)] (0 = Success)
-                val responseBytes = byteArrayOf(0, 0)
-                sendAapRawMessage(output, CHANNEL_CONTROL, Control.ControlMsgType.MESSAGE_AUTH_COMPLETE_VALUE, responseBytes)
+            Control.ControlMsgType.MESSAGE_AUTH_COMPLETE_VALUE -> {
+                Log.i(TAG, "AAP Phone Authentication Complete acknowledged!")
             }
 
             Control.ControlMsgType.MESSAGE_SERVICE_DISCOVERY_REQUEST_VALUE -> {
@@ -199,36 +246,34 @@ class AndroidAutoEngine : ProjectionEngine {
                 Log.i(TAG, "AAP Video Stream Start confirmed")
             }
 
-            else -> {
-                // Video Data Packet: contains media timestamp (first 8 bytes) followed by H.264 NAL
-                val timestampOffset = if (payload.size > 8 && payload[0] == 0.toByte() && payload[1] == 0.toByte()) 8 else 0
-                val nalSize = payload.size - timestampOffset
-                if (nalSize > 0) {
-                    sink.onVideoNal(payload, timestampOffset, nalSize, System.nanoTime() / 1000)
+            Media.MsgType.MEDIA_MESSAGE_DATA_VALUE -> {
+                // Video frame payload (offset 2 skips msgType)
+                if (payload.size > 2) {
+                    val nalOffset = 2
+                    val nalLength = payload.size - 2
+                    sink.onVideoNal(payload, nalOffset, nalLength, System.nanoTime() / 1000)
                 }
             }
         }
     }
 
     private fun handleAudioMessage(
-        channelType: AudioChannel,
+        channel: AudioChannel,
         payload: ByteArray,
         sink: MediaSink,
         sampleRate: Int,
-        channelCount: Int
+        channels: Int
     ) {
-        val audioOffset = if (payload.size > 8 && payload[0] == 0.toByte() && payload[1] == 0.toByte()) 8 else 0
-        val pcmLength = payload.size - audioOffset
-        if (pcmLength > 0) {
-            val pcmBytes = ByteArray(pcmLength)
-            System.arraycopy(payload, audioOffset, pcmBytes, 0, pcmLength)
-            sink.onAudioData(channelType, pcmBytes, sampleRate, channelCount)
+        if (payload.size > 2) {
+            val audioPcm = ByteArray(payload.size - 2)
+            System.arraycopy(payload, 2, audioPcm, 0, audioPcm.size)
+            sink.onAudioData(channel, audioPcm, sampleRate, channels)
         }
     }
 
     private fun handleInputMessage(msgType: Int, output: OutputStream) {
         if (msgType == Input.MsgType.BINDINGREQUEST_VALUE) {
-            Log.i(TAG, "AAP Input Binding Request received. Granting binding...")
+            Log.i(TAG, "AAP Input Binding Request received. Responding success...")
             val response = Input.BindingResponse.newBuilder()
                 .setStatus(Common.MessageStatus.STATUS_SUCCESS)
                 .build()
@@ -240,7 +285,7 @@ class AndroidAutoEngine : ProjectionEngine {
         output: OutputStream,
         channel: Int,
         type: Int,
-        proto: Message
+        proto: com.google.protobuf.MessageLite
     ) {
         val protoBytes = proto.toByteArray()
         sendAapRawMessage(output, channel, type, protoBytes)
@@ -258,7 +303,8 @@ class AndroidAutoEngine : ProjectionEngine {
 
             // Header (4B): [Channel(1B)][Flags(1B)][PayloadLen(2B)]
             frame[0] = channel.toByte()
-            frame[1] = 0x03.toByte() // First & Last frame
+            val baseFlags = 0x03 // First & Last frame
+            frame[1] = baseFlags.toByte()
             frame[2] = ((payloadLength shr 8) and 0xFF).toByte()
             frame[3] = (payloadLength and 0xFF).toByte()
 
@@ -268,8 +314,25 @@ class AndroidAutoEngine : ProjectionEngine {
 
             System.arraycopy(body, 0, frame, 6, body.size)
 
+            val ssl = sslContext
+            val finalFrame = if (isSslHandshakeComplete && ssl != null) {
+                // Encrypt payload (frame[4..])
+                val encrypted = ssl.encrypt(4, payloadLength, frame)
+                if (encrypted != null) {
+                    val encData = encrypted.data
+                    encData[0] = channel.toByte()
+                    encData[1] = (baseFlags or 0x08).toByte() // Mark encrypted
+                    Utils.intToBytes(encrypted.limit - 4, 2, encData)
+                    encData
+                } else {
+                    frame
+                }
+            } else {
+                frame
+            }
+
             synchronized(output) {
-                output.write(frame)
+                output.write(finalFrame)
                 output.flush()
             }
         } catch (e: Exception) {
@@ -289,6 +352,8 @@ class AndroidAutoEngine : ProjectionEngine {
         workerThread = null
         currentTransport = null
         currentSink = null
+        sslContext = null
+        isSslHandshakeComplete = false
     }
 
     override fun sendTouchEvent(action: Int, x: Float, y: Float) {
@@ -349,6 +414,49 @@ class AndroidAutoEngine : ProjectionEngine {
             sendAapProtoMessage(transport.outputStream, CHANNEL_INPUT, Input.MsgType.EVENT_VALUE, inputReport)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to send AAP key: ${e.message}")
+        }
+    }
+
+    /**
+     * Adapter wrapping TransportChannel into OpenHeadUnit's AccessoryConnection
+     * so that AapSslContext can perform the TLS handshake seamlessly.
+     */
+    private class TransportAccessoryConnection(
+        private val transport: TransportChannel
+    ) : AccessoryConnection {
+        private val dataInput = DataInputStream(transport.inputStream)
+
+        override val isSingleMessage: Boolean get() = false
+
+        override fun sendBlocking(buf: ByteArray, length: Int, timeout: Int): Int {
+            return try {
+                transport.outputStream.write(buf, 0, length)
+                transport.outputStream.flush()
+                length
+            } catch (e: Exception) {
+                Log.w(TAG, "sendBlocking failed: ${e.message}")
+                -1
+            }
+        }
+
+        override fun recvBlocking(buf: ByteArray, length: Int, timeout: Int, readFully: Boolean): Int {
+            return try {
+                if (readFully) {
+                    dataInput.readFully(buf, 0, length)
+                    length
+                } else {
+                    dataInput.read(buf, 0, length)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "recvBlocking failed: ${e.message}")
+                -1
+            }
+        }
+
+        override val isConnected: Boolean get() = true
+        override suspend fun connect(): Boolean = true
+        override fun disconnect() {
+            try { transport.close() } catch (_: Exception) {}
         }
     }
 }

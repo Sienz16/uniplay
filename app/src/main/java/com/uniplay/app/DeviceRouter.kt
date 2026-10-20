@@ -20,7 +20,7 @@ class DeviceRouter(private val context: Context) {
     }
 
     private val carPlayEngine = CarPlayEngine()
-    private val androidAutoEngine = AndroidAutoEngine()
+    private val androidAutoEngine = AndroidAutoEngine(context)
 
     private var activeEngine: ProjectionEngine? = null
 
