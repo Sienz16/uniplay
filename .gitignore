@@ -1,0 +1,26 @@
+*.iml
+.gradle
+/local.properties
+/.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+
+# Built application files
+*.apk
+*.aar
+*.aab
+
+# Android build outputs
+**/build/
+app/build/
+core-common/build/
+protocol-androidauto/build/
+protocol-carplay/build/
+
+# Reference repositories (external clones)
+_ref_diauto/
+_ref_diplay/
+_ref_*/

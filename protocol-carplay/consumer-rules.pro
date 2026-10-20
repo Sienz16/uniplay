@@ -1,0 +1,1 @@
+# CarPlay consumer proguard rules

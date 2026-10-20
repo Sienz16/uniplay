@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Apple Devices (CarPlay) -->
+    <usb-device vendor-id="1452" />
+    <!-- Google Android Open Accessory (Android Auto) -->
+    <usb-device vendor-id="6353" />
+</resources>
