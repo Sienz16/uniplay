@@ -37,9 +37,20 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
     private lateinit var statusText: TextView
     private lateinit var btnConnectPhone: Button
 
+    @Volatile
     private var videoDecoder: ZeroCopyVideoDecoder? = null
     private var audioTrackMedia: LeanAudioTrack? = null
     private var audioTrackNav: LeanAudioTrack? = null
+
+    // SPS/PPS may arrive before the Surface is ready; keep them for the decoder.
+    @Volatile
+    private var pendingSps: ByteArray? = null
+    @Volatile
+    private var pendingPps: ByteArray? = null
+    @Volatile
+    private var pendingWidth = 1280
+    @Volatile
+    private var pendingHeight = 720
 
     private lateinit var deviceRouter: DeviceRouter
     private lateinit var memoryGuard: MemoryGuard
@@ -206,8 +217,22 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         Log.i(TAG, "Surface created. Initializing ZeroCopyVideoDecoder...")
-        videoDecoder = ZeroCopyVideoDecoder(holder.surface) { error ->
-            Log.e(TAG, "Decoder error encountered", error)
+        val decoder = ZeroCopyVideoDecoder(
+            holder.surface,
+            onCodecError = { error -> Log.e(TAG, "Decoder error encountered", error) },
+            onFirstFrameRendered = { width, height ->
+                Log.i(TAG, "First video frame rendered (${width}x$height). Projection is live.")
+                runOnUiThread { hideGuideOverlay() }
+            }
+        )
+        videoDecoder = decoder
+
+        // Parameter sets that arrived before the surface existed are applied now.
+        val sps = pendingSps
+        val pps = pendingPps
+        if (sps != null && pps != null) {
+            Log.i(TAG, "Applying SPS/PPS cached before surface was ready")
+            decoder.configure(sps, pps, pendingWidth, pendingHeight)
         }
     }
 
@@ -223,17 +248,23 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
 
     // MediaSink implementation
     override fun onVideoConfig(sps: ByteArray, pps: ByteArray, width: Int, height: Int) {
-        runOnUiThread {
-            hideGuideOverlay()
-            videoDecoder?.configure(sps, pps, width, height)
-        }
+        pendingSps = sps
+        pendingPps = pps
+        pendingWidth = width
+        pendingHeight = height
+        Log.i(TAG, "Video config received (${width}x$height). Handing parameter sets to the decoder.")
+        // configure() only stores the parameter sets; the codec is rebuilt on the
+        // decoder thread, so this is safe to call from the UI thread.
+        videoDecoder?.configure(sps, pps, width, height)
     }
 
     override fun onVideoNal(nalUnit: ByteArray, offset: Int, length: Int, timestampUs: Long) {
-        if (!hasStreamStarted) {
-            runOnUiThread { hideGuideOverlay() }
+        val decoder = videoDecoder
+        if (decoder == null) {
+            Log.w(TAG, "Video NAL arrived before surface was ready (${length}b), dropping")
+            return
         }
-        videoDecoder?.feedNalUnit(nalUnit, offset, length, timestampUs)
+        decoder.feedNalUnit(nalUnit, offset, length, timestampUs)
     }
 
     private fun hideGuideOverlay() {
@@ -271,9 +302,24 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
         }
     }
 
-    // Touch & Key Dispatching to Active Engine
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        deviceRouter.getActiveEngine()?.sendTouchEvent(event.action, event.x, event.y)
+    // Touch & Key Dispatching to Active Engine.
+    // Intercept at dispatch time so the SurfaceView can never swallow the gesture.
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (!hasStreamStarted) {
+            return super.dispatchTouchEvent(event)
+        }
+
+        val viewW = surfaceView.width.toFloat()
+        val viewH = surfaceView.height.toFloat()
+        if (viewW <= 0f || viewH <= 0f) {
+            return super.dispatchTouchEvent(event)
+        }
+
+        // SurfaceView renders the 1280x720 AAP buffer stretched to its bounds.
+        val videoX = (event.x / viewW * 1280f).coerceIn(0f, 1279f)
+        val videoY = (event.y / viewH * 720f).coerceIn(0f, 719f)
+
+        deviceRouter.getActiveEngine()?.sendTouchEvent(event.actionMasked, videoX, videoY)
         return true
     }
 

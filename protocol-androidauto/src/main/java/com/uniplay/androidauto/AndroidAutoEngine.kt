@@ -1,7 +1,9 @@
 package com.uniplay.androidauto
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
+import android.view.MotionEvent
 import com.andrerinas.openheadunit.aap.AapSslContext
 import com.andrerinas.openheadunit.aap.Utils
 import com.andrerinas.openheadunit.aap.protocol.messages.Messages
@@ -37,6 +39,31 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         const val CHANNEL_NAVIGATION_STATUS = 10
 
         private const val MAX_AAP_PAYLOAD = 4 * 1024 * 1024 // 4MB maximum frame size
+
+        // AAP video framing flags.
+        /** A whole access unit in one message. */
+        private const val FLAG_SINGLE = 11
+
+        /** The first fragment of an access unit. Carries the message type. */
+        private const val FLAG_FIRST = 9
+
+        /** A fragment that is neither the first nor the last. Raw access-unit bytes. */
+        private const val FLAG_MIDDLE = 8
+
+        /** The last fragment of an access unit. Raw access-unit bytes. */
+        private const val FLAG_LAST = 10
+
+        /** Payload offset of the access unit when the message carries a timestamp indication. */
+        private const val OFFSET_TIMESTAMP_INDICATION = 10
+
+        /** Payload offset of the access unit when the message carries only a media indication. */
+        private const val OFFSET_MEDIA_INDICATION = 2
+
+        /** How far into an access unit the SPS/PPS are looked for. */
+        private const val VIDEO_CONFIG_SCAN_LIMIT = 16 * 1024
+
+        /** How often the video throughput summary is logged. */
+        private const val VIDEO_STATS_INTERVAL_MS = 5000L
     }
 
     override val type: ProjectionType = ProjectionType.ANDROID_AUTO
@@ -54,6 +81,25 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
     private val videoReassemblyBuffer = java.io.ByteArrayOutputStream(256 * 1024)
     private val inputExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
+    /** True while a fragmented access unit is being assembled. */
+    private var videoAssembling = false
+
+    /** The last SPS handed to the sink, so a changed one can be pushed again. */
+    private var lastVideoSps: ByteArray? = null
+
+    // Video throughput counters, reported periodically so "is the stream arriving?"
+    // is answerable from the log alone.
+    private var videoFramesReceived = 0L
+    private var videoBytesReceived = 0L
+    private var lastVideoStatsMs = 0L
+
+    @Volatile
+    private var videoConfigSent = false
+
+    // Negotiated video size. Must match AapServiceDiscovery's 1280x720 config.
+    private val videoWidth = 1280
+    private val videoHeight = 720
+
     override fun start(transport: TransportChannel, sink: MediaSink) {
         if (running.getAndSet(true)) {
             Log.w(TAG, "Android Auto session already active. Restarting...")
@@ -65,6 +111,7 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         currentSink = sink
         isSslHandshakeComplete = false
         sessionIds.clear()
+        videoConfigSent = false
 
         workerThread = Thread({
             runAapLoop(transport, sink)
@@ -192,38 +239,29 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         output: OutputStream,
         sink: MediaSink
     ) {
+        if (payload.isEmpty()) return
+
+        // Video is dispatched first and entirely on its own terms. The continuation
+        // fragments of an access unit carry no message type, so the generic type
+        // handling below must never get to look at their first two bytes: doing so
+        // both loses the fragment and puts a bogus message on the wire.
+        if (channel == CHANNEL_VIDEO) {
+            handleVideoMessage(flags, payload, output, sink)
+            return
+        }
+
         if (payload.size < 2) return
+        val msgType = readMsgType(payload)
 
-        val msgType = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
-
-        // 1. Generic Control Message: Channel Open Request (type 7) arrives on the target channel
+        // Channel Open Request (type 7) arrives on the channel it is about.
         if (msgType == Control.ControlMsgType.MESSAGE_CHANNEL_OPEN_REQUEST_VALUE) {
-            Log.i(TAG, "AAP Channel Open Request received on channel $channel. Granting channel open...")
-            val response = Control.ChannelOpenResponse.newBuilder()
-                .setStatus(Common.MessageStatus.STATUS_SUCCESS)
-                .build()
-            sendAapProtoMessage(output, channel, Control.ControlMsgType.MESSAGE_CHANNEL_OPEN_RESPONSE_VALUE, response)
-
-            // When Sensor channel opens, immediately inform phone that driving status is UNRESTRICTED
-            if (channel == CHANNEL_SENSOR) {
-                Log.i(TAG, "AAP Sensor channel opened: announcing UNRESTRICTED driving status")
-                val sensorBatch = Sensors.SensorBatch.newBuilder()
-                    .addDrivingStatus(
-                        Sensors.SensorBatch.DrivingStatusData.newBuilder()
-                            .setStatus(Sensors.SensorBatch.DrivingStatusData.Status.UNRESTRICTED_VALUE)
-                    ).build()
-                sendAapProtoMessage(output, CHANNEL_SENSOR, Sensors.SensorsMsgType.SENSOR_EVENT_VALUE, sensorBatch)
-            }
+            grantChannelOpen(channel, output)
             return
         }
 
         when (channel) {
             CHANNEL_CONTROL -> {
                 handleControlMessage(msgType, output)
-            }
-
-            CHANNEL_VIDEO -> {
-                handleVideoMessage(flags, payload, output, sink)
             }
 
             CHANNEL_AUDIO_MEDIA -> {
@@ -241,6 +279,34 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
             CHANNEL_INPUT -> {
                 handleInputMessage(msgType, output)
             }
+        }
+    }
+
+    /** The two-byte message type at the head of an AAP payload. */
+    private fun readMsgType(payload: ByteArray): Int {
+        return ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+    }
+
+    /**
+     * Answers a Channel Open Request and announces an unrestricted driving status on
+     * the sensor channel, which the phone waits for before it starts sending.
+     */
+    private fun grantChannelOpen(channel: Int, output: OutputStream) {
+        Log.i(TAG, "AAP Channel Open Request received on channel $channel. Granting channel open...")
+        val response = Control.ChannelOpenResponse.newBuilder()
+            .setStatus(Common.MessageStatus.STATUS_SUCCESS)
+            .build()
+        sendAapProtoMessage(output, channel, Control.ControlMsgType.MESSAGE_CHANNEL_OPEN_RESPONSE_VALUE, response)
+
+        if (channel == CHANNEL_SENSOR) {
+            Log.i(TAG, "AAP Sensor channel opened: announcing UNRESTRICTED driving status")
+            val sensorBatch = Sensors.SensorBatch.newBuilder()
+                .addDrivingStatus(
+                    Sensors.SensorBatch.DrivingStatusData.newBuilder()
+                        .setStatus(Sensors.SensorBatch.DrivingStatusData.Status.UNRESTRICTED_VALUE)
+                )
+                .build()
+            sendAapProtoMessage(output, CHANNEL_SENSOR, Sensors.SensorsMsgType.SENSOR_EVENT_VALUE, sensorBatch)
         }
     }
 
@@ -287,13 +353,21 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         output: OutputStream,
         sink: MediaSink
     ) {
-        val isFirst = (flags and 0x01 != 0)
-        val isLast = (flags and 0x02 != 0)
+        // AAP video framing: 11 = whole access unit, 9 = first, 8 = middle, 10 = last.
+        // Only the first and the single-frame messages carry a 2-byte message type; the
+        // continuation fragments are raw access-unit bytes with no type of their own.
+        // Control messages (channel open, etc.) arrive with bit 0x04 set, e.g. 0x0F.
+        val isControlMessage = (flags and 0x04) != 0
+        val hasType = isControlMessage || flags == FLAG_FIRST || flags == FLAG_SINGLE
+        val msgType = if (hasType && payload.size >= 2) readMsgType(payload) else -1
 
-        // If it's a first or single frame, check for control messages like Setup or VideoFocusRequest
-        if (isFirst && payload.size >= 2) {
-            val msgType = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+        if (hasType) {
             when (msgType) {
+                Control.ControlMsgType.MESSAGE_CHANNEL_OPEN_REQUEST_VALUE -> {
+                    grantChannelOpen(CHANNEL_VIDEO, output)
+                    return
+                }
+
                 Media.MsgType.MEDIA_MESSAGE_SETUP_VALUE -> {
                     Log.i(TAG, "AAP Video Setup Request. Replying with Media Config (maxUnacked=12)...")
                     val config = Media.Config.newBuilder()
@@ -333,47 +407,147 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
             }
         }
 
-        // Video NAL payload reassembly
-        if (isFirst) {
-            videoReassemblyBuffer.reset()
-            val payloadOffset = findVideoPayloadOffset(payload)
-            if (payload.size > payloadOffset) {
+        when (flags) {
+            FLAG_SINGLE -> {
+                val payloadOffset = findVideoPayloadOffset(payload)
+                if (payloadOffset < 0) {
+                    Log.w(TAG, "Single video message has no start code (len=${payload.size}); dropping it")
+                    return
+                }
+                deliverVideoFrame(payload.copyOfRange(payloadOffset, payload.size), sink)
+            }
+
+            FLAG_FIRST -> {
+                val payloadOffset = findVideoPayloadOffset(payload)
+                if (payloadOffset < 0) {
+                    Log.w(TAG, "First video fragment has no start code (len=${payload.size}); dropping the frame")
+                    videoAssembling = false
+                    videoReassemblyBuffer.reset()
+                    return
+                }
+                videoAssembling = true
+                videoReassemblyBuffer.reset()
                 videoReassemblyBuffer.write(payload, payloadOffset, payload.size - payloadOffset)
             }
-        } else {
-            // Continuation fragment (flags == 8 or 10): write raw payload bytes
-            videoReassemblyBuffer.write(payload, 0, payload.size)
-        }
 
-        if (isLast) {
-            val assembledData = videoReassemblyBuffer.toByteArray()
-            if (assembledData.isNotEmpty()) {
-                sink.onVideoNal(assembledData, 0, assembledData.size, System.nanoTime() / 1000)
-
-                val sessionId = sessionIds[CHANNEL_VIDEO] ?: 0
-                val ack = Media.Ack.newBuilder()
-                    .setSessionId(sessionId)
-                    .setAck(1)
-                    .build()
-                sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_ACK_VALUE, ack)
+            FLAG_MIDDLE -> {
+                if (!videoAssembling) {
+                    Log.w(TAG, "Orphaned video fragment (flags=$flags); dropping it")
+                    return
+                }
+                videoReassemblyBuffer.write(payload, 0, payload.size)
             }
-            videoReassemblyBuffer.reset()
+
+            FLAG_LAST -> {
+                if (!videoAssembling) {
+                    Log.w(TAG, "Orphaned video fragment (flags=$flags); dropping it")
+                    return
+                }
+                videoReassemblyBuffer.write(payload, 0, payload.size)
+                videoAssembling = false
+                val frame = videoReassemblyBuffer.toByteArray()
+                videoReassemblyBuffer.reset()
+                if (frame.isNotEmpty()) deliverVideoFrame(frame, sink)
+            }
+
+            else -> {
+                Log.w(TAG, "Unknown video message flags 0x${flags.toString(16)}; ignoring")
+                return
+            }
+        }
+
+        // Acknowledge the data and codec-config messages, the way every other head
+        // unit does. The window the phone keeps open is counted in messages, so a
+        // frame that is never acked stops the stream instead of slowing it down.
+        if (hasType && (msgType == Media.MsgType.MEDIA_MESSAGE_DATA_VALUE ||
+                msgType == Media.MsgType.MEDIA_MESSAGE_CODEC_CONFIG_VALUE)
+        ) {
+            sendVideoAck(output)
         }
     }
 
+    private fun sendVideoAck(output: OutputStream) {
+        val sessionId = sessionIds[CHANNEL_VIDEO] ?: 0
+        val ack = Media.Ack.newBuilder()
+            .setSessionId(sessionId)
+            .setAck(1)
+            .build()
+        sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_ACK_VALUE, ack)
+    }
+
+    /** Hands a complete access unit to the decoder, parameter sets first. */
+    private fun deliverVideoFrame(frame: ByteArray, sink: MediaSink) {
+        sendVideoConfigIfFound(frame, sink)
+        sink.onVideoNal(frame, 0, frame.size, System.nanoTime() / 1000)
+
+        videoFramesReceived++
+        videoBytesReceived += frame.size
+        reportVideoStats()
+    }
+
+    /** Periodic one-line summary of the video stream. */
+    private fun reportVideoStats() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastVideoStatsMs == 0L) {
+            lastVideoStatsMs = now
+            return
+        }
+        val elapsed = now - lastVideoStatsMs
+        if (elapsed < VIDEO_STATS_INTERVAL_MS) return
+        lastVideoStatsMs = now
+        Log.i(
+            TAG,
+            "Video stream: ${videoFramesReceived} access units, ${videoBytesReceived / 1024} KB total " +
+                "(${(videoBytesReceived / elapsed)} B/s)"
+        )
+    }
+
+    /**
+     * Extracts SPS/PPS from the first decoded access unit and hands them to the
+     * sink so MediaCodec can be configured with csd-0/csd-1. Without this the
+     * codec decodes nothing and the projection stays black.
+     */
+    private fun sendVideoConfigIfFound(data: ByteArray, sink: MediaSink) {
+        // The parameter sets live in the first few hundred bytes of a keyframe, so a
+        // bounded scan is enough and keeps the per-frame cost off the transport.
+        val scanLength = minOf(data.size, VIDEO_CONFIG_SCAN_LIMIT)
+        val sets = H264ParameterSets.find(data, 0, scanLength) ?: return
+
+        val previous = lastVideoSps
+        if (videoConfigSent && previous != null && previous.contentEquals(sets.sps)) return
+
+        videoConfigSent = true
+        lastVideoSps = sets.sps
+
+        // Prefer the size the SPS reports: the phone may send something other than
+        // the size we negotiated, and a decoder configured for the wrong size shows
+        // nothing at all on some components.
+        val width = if (sets.width > 0) sets.width else videoWidth
+        val height = if (sets.height > 0) sets.height else videoHeight
+        Log.i(
+            TAG,
+            "Video config detected: SPS=${sets.sps.size}b PPS=${sets.pps.size}b " +
+                "size=${width}x$height. Configuring decoder."
+        )
+        sink.onVideoConfig(sets.sps, sets.pps, width, height)
+    }
+
+    /**
+     * Offset of the access unit inside a first or single video message.
+     *
+     * The protocol puts the frame at offset 10 when the message carries a timestamp
+     * indication and at offset 2 when it carries only a media indication. When
+     * neither holds there is no access unit in this message at all, and -1 says so
+     * rather than handing the codec a frame that lost its own first bytes.
+     */
     private fun findVideoPayloadOffset(payload: ByteArray): Int {
-        if (hasStartCodeAt(payload, 10)) return 10
-        if (hasStartCodeAt(payload, 2)) return 2
-        return 2
-    }
-
-    private fun hasStartCodeAt(buf: ByteArray, offset: Int): Boolean {
-        if (offset + 3 > buf.size) return false
-        if (buf[offset] == 0.toByte() && buf[offset + 1] == 0.toByte()) {
-            if (buf[offset + 2] == 1.toByte()) return true
-            if (offset + 4 <= buf.size && buf[offset + 2] == 0.toByte() && buf[offset + 3] == 1.toByte()) return true
+        if (H264ParameterSets.payloadStartsAt(payload, OFFSET_TIMESTAMP_INDICATION, payload.size)) {
+            return OFFSET_TIMESTAMP_INDICATION
         }
-        return false
+        if (H264ParameterSets.payloadStartsAt(payload, OFFSET_MEDIA_INDICATION, payload.size)) {
+            return OFFSET_MEDIA_INDICATION
+        }
+        return -1
     }
 
     private fun handleAudioMessage(
@@ -516,6 +690,12 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
             currentSink = null
             sessionIds.clear()
             videoReassemblyBuffer.reset()
+            videoConfigSent = false
+            lastVideoSps = null
+            videoAssembling = false
+            videoFramesReceived = 0L
+            videoBytesReceived = 0L
+            lastVideoStatsMs = 0L
         } catch (e: Exception) {
             Log.w(TAG, "Error while stopping engine: ${e.message}")
         }
@@ -528,10 +708,14 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         inputExecutor.execute {
             try {
                 val pointerAction = when (action) {
-                    0 -> Input.TouchEvent.PointerAction.TOUCH_ACTION_DOWN
-                    1 -> Input.TouchEvent.PointerAction.TOUCH_ACTION_UP
-                    2 -> Input.TouchEvent.PointerAction.TOUCH_ACTION_MOVE
-                    else -> Input.TouchEvent.PointerAction.TOUCH_ACTION_DOWN
+                    MotionEvent.ACTION_DOWN -> Input.TouchEvent.PointerAction.TOUCH_ACTION_DOWN
+                    MotionEvent.ACTION_UP -> Input.TouchEvent.PointerAction.TOUCH_ACTION_UP
+                    MotionEvent.ACTION_MOVE -> Input.TouchEvent.PointerAction.TOUCH_ACTION_MOVE
+                    MotionEvent.ACTION_CANCEL -> Input.TouchEvent.PointerAction.TOUCH_ACTION_CANCEL
+                    MotionEvent.ACTION_OUTSIDE -> Input.TouchEvent.PointerAction.TOUCH_ACTION_OUTSIDE
+                    MotionEvent.ACTION_POINTER_DOWN -> Input.TouchEvent.PointerAction.TOUCH_ACTION_POINTER_DOWN
+                    MotionEvent.ACTION_POINTER_UP -> Input.TouchEvent.PointerAction.TOUCH_ACTION_POINTER_UP
+                    else -> return@execute
                 }
 
                 val pointer = Input.TouchEvent.Pointer.newBuilder()
@@ -546,10 +730,18 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
                     .addPointerData(pointer)
                     .build()
 
+                // AAP input timestamps are uptime nanoseconds, not wall-clock time.
+                val timestampNs = SystemClock.elapsedRealtime() * 1_000_000L
                 val inputReport = Input.InputReport.newBuilder()
-                    .setTimestamp(System.currentTimeMillis() * 1000000L)
+                    .setTimestamp(timestampNs)
                     .setTouchEvent(touchEvent)
                     .build()
+
+                if (pointerAction == Input.TouchEvent.PointerAction.TOUCH_ACTION_DOWN ||
+                    pointerAction == Input.TouchEvent.PointerAction.TOUCH_ACTION_UP
+                ) {
+                    Log.i(TAG, "AAP touch $pointerAction at (${x.toInt()}, ${y.toInt()}) ts=$timestampNs")
+                }
 
                 sendAapProtoMessage(transport.outputStream, CHANNEL_INPUT, Input.MsgType.EVENT_VALUE, inputReport)
             } catch (e: Exception) {
@@ -576,7 +768,7 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
                     .build()
 
                 val inputReport = Input.InputReport.newBuilder()
-                    .setTimestamp(System.currentTimeMillis() * 1000000L)
+                    .setTimestamp(SystemClock.elapsedRealtime() * 1_000_000L)
                     .setKeyEvent(keyEvent)
                     .build()
 
