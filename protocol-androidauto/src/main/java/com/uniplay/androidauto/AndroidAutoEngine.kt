@@ -4,6 +4,7 @@ import android.util.Log
 import com.uniplay.core.*
 import java.io.InputStream
 import java.io.OutputStream
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -20,6 +21,8 @@ class AndroidAutoEngine : ProjectionEngine {
         const val CHANNEL_AUDIO_GUIDANCE = 3
         const val CHANNEL_INPUT = 4
         const val CHANNEL_SENSOR = 5
+
+        private const val MAX_AAP_PAYLOAD = 4 * 1024 * 1024 // 4MB maximum safe frame size
     }
 
     override val type: ProjectionType = ProjectionType.ANDROID_AUTO
@@ -62,6 +65,11 @@ class AndroidAutoEngine : ProjectionEngine {
                 val flags = headerBuffer[1].toInt() and 0xFF
                 val length = ((headerBuffer[2].toInt() and 0xFF) shl 8) or (headerBuffer[3].toInt() and 0xFF)
 
+                // Security bounds verification to prevent DoS / OOM crashes
+                if (length <= 0 || length > MAX_AAP_PAYLOAD) {
+                    throw IllegalArgumentException("Invalid AAP frame length: $length bytes")
+                }
+
                 // Read payload
                 val payload = ByteArray(length)
                 var payloadRead = 0
@@ -96,11 +104,12 @@ class AndroidAutoEngine : ProjectionEngine {
                 sink.onAudioData(AudioChannel.NAVIGATION, payload, 16000, 1)
             }
             CHANNEL_CONTROL -> {
-                // Service discovery / Handshake
-                Log.d(TAG, "Received control packet (${payload.size} bytes)")
+                // Service discovery / Handshake packet
+                Log.d(TAG, "Received control packet (${payload.size} bytes, flags=$flags)")
             }
             CHANNEL_INPUT -> {
                 // Input ack
+                Log.d(TAG, "Received input acknowledgment (${payload.size} bytes)")
             }
         }
     }
@@ -120,12 +129,58 @@ class AndroidAutoEngine : ProjectionEngine {
     }
 
     override fun sendTouchEvent(action: Int, x: Float, y: Float) {
-        // Formulate AAP Touch Protobuf packet and write to currentTransport.outputStream
-        Log.d(TAG, "Touch event: action=$action, x=$x, y=$y")
+        val transport = currentTransport ?: return
+        if (!running.get()) return
+
+        try {
+            // Formulate AAP Touch Input frame on CHANNEL_INPUT
+            val payload = ByteBuffer.allocate(9).apply {
+                put(action.toByte())
+                putFloat(x)
+                putFloat(y)
+            }.array()
+
+            val frame = ByteArray(4 + payload.size).apply {
+                this[0] = CHANNEL_INPUT.toByte()
+                this[1] = 0 // Flags
+                this[2] = ((payload.size shr 8) and 0xFF).toByte()
+                this[3] = (payload.size and 0xFF).toByte()
+                System.arraycopy(payload, 0, this, 4, payload.size)
+            }
+
+            synchronized(transport) {
+                transport.outputStream.write(frame)
+                transport.outputStream.flush()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to send AAP touch event: ${e.message}")
+        }
     }
 
     override fun sendKeyEvent(keyCode: Int, isDown: Boolean) {
-        // Formulate AAP Key Protobuf packet
-        Log.d(TAG, "Key event: keyCode=$keyCode, isDown=$isDown")
+        val transport = currentTransport ?: return
+        if (!running.get()) return
+
+        try {
+            val payload = ByteBuffer.allocate(5).apply {
+                putInt(keyCode)
+                put(if (isDown) 1.toByte() else 0.toByte())
+            }.array()
+
+            val frame = ByteArray(4 + payload.size).apply {
+                this[0] = CHANNEL_INPUT.toByte()
+                this[1] = 0 // Flags
+                this[2] = ((payload.size shr 8) and 0xFF).toByte()
+                this[3] = (payload.size and 0xFF).toByte()
+                System.arraycopy(payload, 0, this, 4, payload.size)
+            }
+
+            synchronized(transport) {
+                transport.outputStream.write(frame)
+                transport.outputStream.flush()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to send AAP key event: ${e.message}")
+        }
     }
 }
