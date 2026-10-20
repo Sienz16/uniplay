@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.util.Log
 import android.view.*
 import android.widget.TextView
+import com.uniplay.androidauto.AndroidAutoWirelessManager
 import com.uniplay.core.*
 
 /**
@@ -34,6 +35,7 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
     private lateinit var memoryGuard: MemoryGuard
     private lateinit var bluetoothBeacon: BluetoothBeacon
     private lateinit var wirelessServer: WirelessServer
+    private lateinit var aaWirelessManager: AndroidAutoWirelessManager
 
     private var hasStreamStarted = false
 
@@ -67,6 +69,20 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
         badgeBluetooth.text = "Bluetooth: $btName"
 
         bluetoothBeacon.startAdvertising()
+
+        // Start official Android Auto Wireless RFCOMM Handshake Server
+        aaWirelessManager = AndroidAutoWirelessManager(this) { phoneName ->
+            runOnUiThread {
+                statusText.text = "Bluetooth handshake with $phoneName! Handing off to Wi-Fi..."
+                statusText.setTextColor(Color.parseColor("#50E3C2"))
+            }
+        }
+        aaWirelessManager.start(
+            ssid = btName,
+            psk = "12345678",
+            localIp = localIp,
+            port = WirelessServer.PORT_MAIN
+        )
 
         // Initialize and start background high-speed wireless projection server
         wirelessServer = WirelessServer(deviceRouter, this) { status, isConnected ->
@@ -174,6 +190,7 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
 
     override fun onDestroy() {
         super.onDestroy()
+        aaWirelessManager.stop()
         wirelessServer.stop()
         bluetoothBeacon.stopAdvertising()
         deviceRouter.stopActiveSession()
