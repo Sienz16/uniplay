@@ -60,4 +60,28 @@ object NetworkUtils {
         } catch (_: Exception) {}
         return false
     }
+
+    /**
+     * Resolves the gateway IP of the connected Wi-Fi (e.g. Phone Hotspot IP).
+     */
+    fun getGatewayIp(context: Context): String {
+        try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val dhcpInfo = wifiManager?.dhcpInfo
+            if (dhcpInfo != null && dhcpInfo.gateway != 0) {
+                val ip = dhcpInfo.gateway
+                return String.format(
+                    java.util.Locale.US,
+                    "%d.%d.%d.%d",
+                    ip and 0xff,
+                    ip shr 8 and 0xff,
+                    ip shr 16 and 0xff,
+                    ip shr 24 and 0xff
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting gateway IP", e)
+        }
+        return "192.168.43.1"
+    }
 }

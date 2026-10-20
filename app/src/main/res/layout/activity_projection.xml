@@ -201,6 +201,23 @@
                 android:textSize="14sp"
                 android:textStyle="bold" />
 
+            <!-- One-tap Connect to Phone Hotspot button -->
+            <Button
+                android:id="@+id/btn_connect_phone"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:backgroundTint="#2E5BFF"
+                android:paddingLeft="24dp"
+                android:paddingRight="24dp"
+                android:paddingTop="10dp"
+                android:paddingBottom="10dp"
+                android:text="⚡ Connect Directly to Phone Hotspot"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
             <!-- Optimization tip -->
             <TextView
                 android:layout_width="wrap_content"

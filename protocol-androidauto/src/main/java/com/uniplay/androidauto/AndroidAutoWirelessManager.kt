@@ -49,6 +49,38 @@ class AndroidAutoWirelessManager(
             isDaemon = true
             start()
         }
+
+        // Also proactively poke any already-paired phones to wake their Android Auto service
+        pokeBondedDevices(ssid, psk, localIp, port)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun pokeBondedDevices(ssid: String, psk: String, localIp: String, port: Int = 5000) {
+        val adapter = bluetoothAdapter ?: return
+        Thread({
+            try {
+                val bonded = adapter.bondedDevices ?: return@Thread
+                for (device in bonded) {
+                    try {
+                        val devName = try { device.name } catch (_: Exception) { "Paired Device" }
+                        Log.i(TAG, "Proactively waking paired device: $devName (${device.address})...")
+                        val socket = device.createRfcommSocketToServiceRecord(AA_BT_UUID)
+                        socket.connect()
+                        Log.i(TAG, "Connected to $devName! Sending Wi-Fi handoff...")
+                        onPhoneHandoffInitiated(devName)
+                        handleBluetoothHandshake(socket, ssid, psk, localIp, port)
+                        break
+                    } catch (e: Exception) {
+                        Log.d(TAG, "Device ${device.address} did not answer active poke: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error enumerating bonded devices: ${e.message}")
+            }
+        }, "AA-Wireless-BT-Poke").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     @SuppressLint("MissingPermission")
