@@ -118,7 +118,11 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
                 val sslSuccess = ssl.performHandshake(conn)
                 if (sslSuccess) {
                     isSslHandshakeComplete = true
-                    Log.i(TAG, "Handshake: TLS Handshake SUCCESSFUL! Encrypted session established.")
+                    ssl.postHandshakeReset()
+                    Log.i(TAG, "Handshake: TLS Handshake SUCCESSFUL! Sending Status OK to Phone...")
+                    val statusOk = Messages.statusOk
+                    conn.sendBlocking(statusOk, statusOk.size, 2000)
+                    Log.i(TAG, "Handshake: Status OK sent! Awaiting Service Discovery Request...")
                 } else {
                     Log.w(TAG, "Handshake: TLS Handshake failed, proceeding with fallback...")
                 }
@@ -335,7 +339,7 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
             System.arraycopy(body, 0, frame, 6, body.size)
 
             val ssl = sslContext
-            val finalFrame = if (isSslHandshakeComplete && ssl != null) {
+            if (isSslHandshakeComplete && ssl != null) {
                 // Encrypt payload (frame[4..])
                 val encrypted = ssl.encrypt(4, payloadLength, frame)
                 if (encrypted != null) {
@@ -343,16 +347,16 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
                     encData[0] = channel.toByte()
                     encData[1] = (baseFlags or 0x08).toByte() // Mark encrypted
                     Utils.intToBytes(encrypted.limit - 4, 2, encData)
-                    encData
-                } else {
-                    frame
+                    synchronized(output) {
+                        output.write(encData, 0, encrypted.limit)
+                        output.flush()
+                    }
+                    return
                 }
-            } else {
-                frame
             }
 
             synchronized(output) {
-                output.write(finalFrame)
+                output.write(frame, 0, frame.size)
                 output.flush()
             }
         } catch (e: Exception) {
