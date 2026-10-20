@@ -32,6 +32,30 @@ class ZeroCopyVideoDecoder(
     private var pendingSps: ByteArray? = null
     private var pendingPps: ByteArray? = null
 
+    init {
+        // Pre-configure MediaCodec for low latency 1280x720 video decoding
+        initDefaultCodec(1280, 720)
+    }
+
+    @Synchronized
+    private fun initDefaultCodec(width: Int, height: Int) {
+        try {
+            stop()
+            val format = MediaFormat.createVideoFormat(MIME_TYPE_AVC, width, height).apply {
+                setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                setInteger(MediaFormat.KEY_PRIORITY, 0)
+            }
+            val newCodec = MediaCodec.createDecoderByType(MIME_TYPE_AVC)
+            newCodec.configure(format, surface, null, 0)
+            newCodec.start()
+            codec = newCodec
+            isConfigured = true
+            Log.i(TAG, "Hardware MediaCodec pre-initialized for $width x $height")
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaCodec pre-initialization notice: ${e.message}")
+        }
+    }
+
     @Synchronized
     fun configure(sps: ByteArray, pps: ByteArray, width: Int = 1280, height: Int = 720) {
         try {
@@ -39,7 +63,6 @@ class ZeroCopyVideoDecoder(
             val format = MediaFormat.createVideoFormat(MIME_TYPE_AVC, width, height).apply {
                 setByteBuffer("csd-0", ByteBuffer.wrap(sps))
                 setByteBuffer("csd-1", ByteBuffer.wrap(pps))
-                // Low latency flags for automotive head units
                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
                 setInteger(MediaFormat.KEY_PRIORITY, 0)
             }
@@ -50,9 +73,9 @@ class ZeroCopyVideoDecoder(
 
             codec = newCodec
             isConfigured = true
-            Log.i(TAG, "Hardware MediaCodec successfully configured ($width x $height)")
+            Log.i(TAG, "Hardware MediaCodec configured with SPS/PPS ($width x $height)")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to configure MediaCodec", e)
+            Log.e(TAG, "Failed to configure MediaCodec with SPS/PPS", e)
             onCodecError(e)
         }
     }
@@ -64,18 +87,7 @@ class ZeroCopyVideoDecoder(
     @Synchronized
     fun feedNalUnit(data: ByteArray, offset: Int, length: Int, timestampUs: Long) {
         if (!isConfigured) {
-            // Attempt auto-recovery: search for inline SPS and PPS
-            extractInlineSpsPps(data, offset, length)
-            val sps = pendingSps
-            val pps = pendingPps
-            if (sps != null && pps != null) {
-                Log.i(TAG, "Auto-detected inline SPS/PPS. Initializing decoder on the fly!")
-                configure(sps, pps)
-                pendingSps = null
-                pendingPps = null
-            } else {
-                return // Still waiting for SPS/PPS
-            }
+            initDefaultCodec(1280, 720)
         }
 
         val decoder = codec ?: return
@@ -102,44 +114,6 @@ class ZeroCopyVideoDecoder(
         } catch (e: Exception) {
             Log.e(TAG, "Error feeding frame to MediaCodec: ${e.message}")
         }
-    }
-
-    private fun extractInlineSpsPps(data: ByteArray, offset: Int, length: Int) {
-        var i = offset
-        val end = offset + length - 4
-        while (i < end) {
-            if (data[i] == 0.toByte() && data[i + 1] == 0.toByte() && data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()) {
-                val nalType = (data[i + 4].toInt() and 0x1F)
-                if (nalType == NAL_TYPE_SPS && pendingSps == null) {
-                    val nextStart = findNextStartCode(data, i + 4, offset + length)
-                    val spsLen = nextStart - i
-                    val sps = ByteArray(spsLen)
-                    System.arraycopy(data, i, sps, 0, spsLen)
-                    pendingSps = sps
-                    Log.d(TAG, "Discovered inline SPS (${spsLen}b)")
-                } else if (nalType == NAL_TYPE_PPS && pendingPps == null) {
-                    val nextStart = findNextStartCode(data, i + 4, offset + length)
-                    val ppsLen = nextStart - i
-                    val pps = ByteArray(ppsLen)
-                    System.arraycopy(data, i, pps, 0, ppsLen)
-                    pendingPps = pps
-                    Log.d(TAG, "Discovered inline PPS (${ppsLen}b)")
-                }
-            }
-            i++
-        }
-    }
-
-    private fun findNextStartCode(data: ByteArray, start: Int, end: Int): Int {
-        var i = start
-        while (i < end - 3) {
-            if (data[i] == 0.toByte() && data[i + 1] == 0.toByte() &&
-                (data[i + 2] == 1.toByte() || (data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()))) {
-                return i
-            }
-            i++
-        }
-        return end
     }
 
     private fun drainOutput(decoder: MediaCodec) {

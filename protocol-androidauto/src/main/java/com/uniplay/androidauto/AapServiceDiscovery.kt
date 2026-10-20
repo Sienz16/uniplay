@@ -1,5 +1,6 @@
 package com.uniplay.androidauto
 
+import android.view.KeyEvent
 import com.andrerinas.openheadunit.aap.protocol.proto.Common
 import com.andrerinas.openheadunit.aap.protocol.proto.Control
 import com.andrerinas.openheadunit.aap.protocol.proto.Media
@@ -7,18 +8,47 @@ import com.andrerinas.openheadunit.aap.protocol.proto.Sensors
 
 /**
  * Builds the official Google Android Auto Service Discovery Response protobuf message.
- * Tells the connected Android phone our display resolution (1280x720, 60fps, H.264),
- * audio channels (48kHz Media, 16kHz Speech), and input touchscreen capabilities.
+ * Conforms to standard Google AAP Channel mapping & capabilities.
  */
 object AapServiceDiscovery {
 
     const val CHANNEL_CONTROL = 0
-    const val CHANNEL_VIDEO = 1
-    const val CHANNEL_AUDIO_SYSTEM = 2
-    const val CHANNEL_AUDIO_SPEECH = 3
-    const val CHANNEL_AUDIO_MEDIA = 4
-    const val CHANNEL_INPUT = 5
-    const val CHANNEL_SENSOR = 6
+    const val CHANNEL_SENSOR = 1
+    const val CHANNEL_VIDEO = 2
+    const val CHANNEL_INPUT = 3
+    const val CHANNEL_AUDIO_SPEECH = 4
+    const val CHANNEL_AUDIO_SYSTEM = 5
+    const val CHANNEL_AUDIO_MEDIA = 6
+    const val CHANNEL_MIC = 7
+    const val CHANNEL_MEDIA_PLAYBACK = 9
+    const val CHANNEL_NAVIGATION_STATUS = 10
+
+    private val SUPPORTED_KEYCODES = listOf(
+        KeyEvent.KEYCODE_SOFT_LEFT,
+        KeyEvent.KEYCODE_SOFT_RIGHT,
+        KeyEvent.KEYCODE_BACK,
+        KeyEvent.KEYCODE_DPAD_UP,
+        KeyEvent.KEYCODE_DPAD_DOWN,
+        KeyEvent.KEYCODE_DPAD_LEFT,
+        KeyEvent.KEYCODE_DPAD_RIGHT,
+        KeyEvent.KEYCODE_DPAD_CENTER,
+        KeyEvent.KEYCODE_MEDIA_PLAY,
+        KeyEvent.KEYCODE_MEDIA_PAUSE,
+        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+        KeyEvent.KEYCODE_MEDIA_NEXT,
+        KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+        KeyEvent.KEYCODE_SEARCH,
+        KeyEvent.KEYCODE_CALL,
+        KeyEvent.KEYCODE_MUSIC,
+        KeyEvent.KEYCODE_VOLUME_UP,
+        KeyEvent.KEYCODE_VOLUME_DOWN,
+        KeyEvent.KEYCODE_TAB,
+        KeyEvent.KEYCODE_SPACE,
+        KeyEvent.KEYCODE_ENTER,
+        KeyEvent.KEYCODE_HOME,
+        KeyEvent.KEYCODE_HEADSETHOOK,
+        KeyEvent.KEYCODE_MEDIA_STOP
+    )
 
     fun buildResponse(width: Int = 1280, height: Int = 720, densityDpi: Int = 160): Control.ServiceDiscoveryResponse {
         val builder = Control.ServiceDiscoveryResponse.newBuilder()
@@ -47,7 +77,25 @@ object AapServiceDiscovery {
                     .build()
             )
 
-        // 1. Video Service (Channel 1)
+        // 1. Sensor Service (Channel 1)
+        val sensorService = Control.Service.newBuilder().apply {
+            id = CHANNEL_SENSOR
+            sensorSourceService = Control.Service.SensorSourceService.newBuilder().apply {
+                addSensors(
+                    Control.Service.SensorSourceService.Sensor.newBuilder()
+                        .setType(Sensors.SensorType.DRIVING_STATUS)
+                        .build()
+                )
+                addSensors(
+                    Control.Service.SensorSourceService.Sensor.newBuilder()
+                        .setType(Sensors.SensorType.NIGHT)
+                        .build()
+                )
+            }.build()
+        }.build()
+        builder.addServices(sensorService)
+
+        // 2. Video Service (Channel 2)
         val videoService = Control.Service.newBuilder().apply {
             id = CHANNEL_VIDEO
             mediaSinkService = Control.Service.MediaSinkService.newBuilder().apply {
@@ -69,24 +117,37 @@ object AapServiceDiscovery {
         }.build()
         builder.addServices(videoService)
 
-        // 2. Media Audio Service (Channel 4) - 48kHz Stereo 16-bit PCM
-        val mediaAudioService = Control.Service.newBuilder().apply {
-            id = CHANNEL_AUDIO_MEDIA
+        // 3. Touchscreen Input Service (Channel 3)
+        val inputService = Control.Service.newBuilder().apply {
+            id = CHANNEL_INPUT
+            inputSourceService = Control.Service.InputSourceService.newBuilder().apply {
+                touchscreen = Control.Service.InputSourceService.TouchConfig.newBuilder().apply {
+                    setWidth(width)
+                    setHeight(height)
+                }.build()
+                addAllKeycodesSupported(SUPPORTED_KEYCODES)
+            }.build()
+        }.build()
+        builder.addServices(inputService)
+
+        // 4. System Sounds Audio Service (Channel 5) - Required to maintain link
+        val systemAudioService = Control.Service.newBuilder().apply {
+            id = CHANNEL_AUDIO_SYSTEM
             mediaSinkService = Control.Service.MediaSinkService.newBuilder().apply {
                 availableType = Media.MediaCodecType.MEDIA_CODEC_AUDIO_PCM
-                audioType = Media.AudioStreamType.MEDIA
+                audioType = Media.AudioStreamType.SYSTEM
                 addAudioConfigs(
                     Media.AudioConfiguration.newBuilder().apply {
-                        sampleRate = 48000
+                        sampleRate = 16000
                         numberOfBits = 16
-                        numberOfChannels = 2
+                        numberOfChannels = 1
                     }.build()
                 )
             }.build()
         }.build()
-        builder.addServices(mediaAudioService)
+        builder.addServices(systemAudioService)
 
-        // 3. Speech / Guidance Audio Service (Channel 3) - 16kHz Mono 16-bit PCM
+        // 5. Speech / Voice Guidance Audio Service (Channel 4) - 16kHz Mono PCM
         val speechAudioService = Control.Service.newBuilder().apply {
             id = CHANNEL_AUDIO_SPEECH
             mediaSinkService = Control.Service.MediaSinkService.newBuilder().apply {
@@ -103,32 +164,53 @@ object AapServiceDiscovery {
         }.build()
         builder.addServices(speechAudioService)
 
-        // 4. Touchscreen Input Service (Channel 5)
-        val inputService = Control.Service.newBuilder().apply {
-            id = CHANNEL_INPUT
-            inputSourceService = Control.Service.InputSourceService.newBuilder().apply {
-                touchscreen = Control.Service.InputSourceService.TouchConfig.newBuilder().apply {
-                    setWidth(width)
-                    setHeight(height)
-                }.build()
-                // Keycodes supported: Back, Home, Play, Pause, Next, Prev
-                addAllKeycodesSupported(listOf(4, 3, 85, 87, 88, 126, 127))
-            }.build()
-        }.build()
-        builder.addServices(inputService)
-
-        // 5. Sensor Service (Channel 6) - Driving Status (Car Parked / In Motion)
-        val sensorService = Control.Service.newBuilder().apply {
-            id = CHANNEL_SENSOR
-            sensorSourceService = Control.Service.SensorSourceService.newBuilder().apply {
-                addSensors(
-                    Control.Service.SensorSourceService.Sensor.newBuilder().apply {
-                        type = Sensors.SensorType.DRIVING_STATUS
+        // 6. Media Audio Service (Channel 6) - 48kHz Stereo PCM
+        val mediaAudioService = Control.Service.newBuilder().apply {
+            id = CHANNEL_AUDIO_MEDIA
+            mediaSinkService = Control.Service.MediaSinkService.newBuilder().apply {
+                availableType = Media.MediaCodecType.MEDIA_CODEC_AUDIO_PCM
+                audioType = Media.AudioStreamType.MEDIA
+                addAudioConfigs(
+                    Media.AudioConfiguration.newBuilder().apply {
+                        sampleRate = 48000
+                        numberOfBits = 16
+                        numberOfChannels = 2
                     }.build()
                 )
             }.build()
         }.build()
-        builder.addServices(sensorService)
+        builder.addServices(mediaAudioService)
+
+        // 7. Microphone Source Service (Channel 7) - Required by Google Android Auto
+        val micService = Control.Service.newBuilder().apply {
+            id = CHANNEL_MIC
+            mediaSourceService = Control.Service.MediaSourceService.newBuilder().apply {
+                type = Media.MediaCodecType.MEDIA_CODEC_AUDIO_PCM
+                audioConfig = Media.AudioConfiguration.newBuilder().apply {
+                    sampleRate = 16000
+                    numberOfBits = 16
+                    numberOfChannels = 1
+                }.build()
+            }.build()
+        }.build()
+        builder.addServices(micService)
+
+        // 8. Media Playback Status (Channel 9)
+        val playbackService = Control.Service.newBuilder().apply {
+            id = CHANNEL_MEDIA_PLAYBACK
+            mediaPlaybackService = Control.Service.MediaPlaybackStatusService.newBuilder().build()
+        }.build()
+        builder.addServices(playbackService)
+
+        // 9. Navigation Turn-by-Turn Status (Channel 10)
+        val navService = Control.Service.newBuilder().apply {
+            id = CHANNEL_NAVIGATION_STATUS
+            navigationStatusService = Control.Service.NavigationStatusService.newBuilder()
+                .setMinimumIntervalMs(1000)
+                .setType(Control.Service.NavigationStatusService.ClusterType.ImageCodesOnly)
+                .build()
+        }.build()
+        builder.addServices(navService)
 
         return builder.build()
     }
