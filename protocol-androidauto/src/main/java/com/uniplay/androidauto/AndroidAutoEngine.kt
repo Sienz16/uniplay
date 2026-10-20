@@ -74,20 +74,37 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         val dataIn = DataInputStream(input)
 
         try {
-            // STEP 1: Send Version Request (v1.2)
-            Log.i(TAG, "Handshake: Sending AAP Version Request (v1.2)...")
-            val versionReq = Messages.versionRequest
-            conn.sendBlocking(versionReq, versionReq.size, 2000)
+            // STEP 1 & 2: Version Exchange (v1.2) with timeout and up to 3 retries
+            var versionReceived = false
+            val verBuf = ByteArray(Messages.DEF_BUFFER_LENGTH)
 
-            // STEP 2: Read Version Response from Phone
-            Log.i(TAG, "Handshake: Awaiting Version Response from Phone...")
-            val verHeader = ByteArray(4)
-            dataIn.readFully(verHeader)
-            val verLen = ((verHeader[2].toInt() and 0xFF) shl 8) or (verHeader[3].toInt() and 0xFF)
-            val verPayload = ByteArray(verLen)
-            dataIn.readFully(verPayload)
-            val verMsgType = if (verLen >= 2) ((verPayload[0].toInt() and 0xFF) shl 8) or (verPayload[1].toInt() and 0xFF) else -1
-            Log.i(TAG, "Handshake: Version Response received! (Type=0x${Integer.toHexString(verMsgType)}, $verLen bytes)")
+            for (attempt in 1..4) {
+                Log.i(TAG, "Handshake: Sending AAP Version Request (attempt $attempt/4)...")
+                val versionReq = Messages.versionRequest
+                conn.sendBlocking(versionReq, versionReq.size, 2000)
+
+                val deadline = System.currentTimeMillis() + 2500
+                while (System.currentTimeMillis() < deadline) {
+                    val remaining = (deadline - System.currentTimeMillis()).toInt().coerceAtLeast(100)
+                    val ret = conn.recvBlocking(verBuf, verBuf.size, remaining, false)
+                    if (ret >= 6
+                        && verBuf[0] == 0.toByte()
+                        && verBuf[4] == 0.toByte()
+                        && verBuf[5] == 2.toByte()
+                    ) {
+                        Log.i(TAG, "Handshake: Version Response received! ($ret bytes, attempt $attempt)")
+                        versionReceived = true
+                        break
+                    }
+                    if (ret <= 0) break
+                }
+                if (versionReceived) break
+                Thread.sleep(300)
+            }
+
+            if (!versionReceived) {
+                throw IllegalStateException("Phone did not respond. Please toggle 'Stop head unit server' then 'Start head unit server' on your phone.")
+            }
 
             // STEP 3: Perform TLS 1.2 Handshake (Channel 0, Msg 3)
             val ctx = context
@@ -108,6 +125,9 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
             } else {
                 Log.w(TAG, "Context unavailable; skipping TLS handshake.")
             }
+
+            // Reset socket timeout to non-blocking stream mode
+            (transport as? SocketTransportChannel)?.socket?.soTimeout = 0
 
             // STEP 4: Standard AAP Message Loop
             val headerBuffer = ByteArray(4)
@@ -425,6 +445,7 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         private val transport: TransportChannel
     ) : AccessoryConnection {
         private val dataInput = DataInputStream(transport.inputStream)
+        private val rawSocket = (transport as? SocketTransportChannel)?.socket
 
         override val isSingleMessage: Boolean get() = false
 
@@ -441,6 +462,7 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
 
         override fun recvBlocking(buf: ByteArray, length: Int, timeout: Int, readFully: Boolean): Int {
             return try {
+                try { rawSocket?.soTimeout = timeout } catch (_: Exception) {}
                 if (readFully) {
                     dataInput.readFully(buf, 0, length)
                     length
@@ -448,12 +470,11 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
                     dataInput.read(buf, 0, length)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "recvBlocking failed: ${e.message}")
                 -1
             }
         }
 
-        override val isConnected: Boolean get() = true
+        override val isConnected: Boolean get() = rawSocket?.isConnected ?: true
         override suspend fun connect(): Boolean = true
         override fun disconnect() {
             try { transport.close() } catch (_: Exception) {}

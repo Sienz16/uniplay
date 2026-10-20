@@ -49,7 +49,7 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
 
     private var hasStreamStarted = false
     private val isConnectingDirect = AtomicBoolean(false)
-    private var hotspotProbeThread: Thread? = null
+    private val isWirelessInitialized = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,9 +93,6 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
             connectDirectToPhone(manual = true)
         }
 
-        // Start background auto-probe to detect Phone's Headunit Server if running
-        startHotspotAutoProbe(gatewayIp)
-
         Log.i(TAG, "ProjectionActivity initialized. ${memoryGuard.dumpMemoryStats()}")
     }
 
@@ -128,6 +125,8 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
     }
 
     private fun initWirelessServices(localIp: String, btName: String) {
+        if (isWirelessInitialized.getAndSet(true)) return
+
         bluetoothBeacon.startAdvertising()
 
         // Start official Android Auto Wireless RFCOMM Handshake Server
@@ -200,37 +199,6 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
                 }
             }
         }, "DirectPhoneConnector").apply {
-            isDaemon = true
-            start()
-        }
-    }
-
-    private fun startHotspotAutoProbe(gatewayIp: String) {
-        hotspotProbeThread = Thread({
-            while (!isDestroyed && !hasStreamStarted) {
-                try {
-                    Thread.sleep(4000)
-                    if (!hasStreamStarted && !isConnectingDirect.get()) {
-                        // Silently probe port 5277 on the gateway (Phone)
-                        val socket = Socket()
-                        socket.connect(InetSocketAddress(gatewayIp, 5277), 1500)
-                        socket.tcpNoDelay = true
-                        Log.i(TAG, "Auto-detected active Android Auto Headunit Server on Phone ($gatewayIp:5277)!")
-
-                        isConnectingDirect.set(true)
-                        runOnUiThread {
-                            statusText.text = "Phone detected on $gatewayIp! Starting projection..."
-                            statusText.setTextColor(Color.parseColor("#00FF9D"))
-                        }
-                        val transport = SocketTransportChannel(socket, TransportType.WIRELESS_WIFI)
-                        deviceRouter.onManualSelect(ProjectionType.ANDROID_AUTO, transport, this@ProjectionActivity)
-                        break
-                    }
-                } catch (_: Exception) {
-                    // Normal when server not yet running on phone
-                }
-            }
-        }, "HotspotAutoProbe").apply {
             isDaemon = true
             start()
         }
@@ -327,8 +295,6 @@ class ProjectionActivity : Activity(), SurfaceHolder.Callback, MediaSink {
 
     override fun onDestroy() {
         super.onDestroy()
-        hotspotProbeThread?.interrupt()
-        hotspotProbeThread = null
         aaWirelessManager.stop()
         wirelessServer.stop()
         bluetoothBeacon.stopAdvertising()
