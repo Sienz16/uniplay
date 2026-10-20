@@ -38,32 +38,24 @@ class CarPlayEngine : ProjectionEngine {
         currentSink = sink
 
         workerThread = Thread({
-            runAirPlayLoop(transport.inputStream, transport.outputStream, sink)
+            runAirPlayLoop(transport.inputStream, sink)
         }, "CarPlayEngineThread").apply {
             priority = Thread.MAX_PRIORITY
             start()
         }
     }
 
-    private fun runAirPlayLoop(input: InputStream, output: OutputStream, sink: MediaSink) {
+    private fun runAirPlayLoop(input: InputStream, sink: MediaSink) {
         Log.i(TAG, "CarPlay session started. Listening for AirPlay/iAP2 stream...")
         val header = ByteArray(8)
 
         try {
             while (running.get()) {
                 // Read 8-byte framing header: [Type(2B)][PayloadLen(4B)][Reserved(2B)]
-                var read = 0
-                while (read < 8) {
-                    val r = input.read(header, read, 8 - read)
-                    if (r < 0) throw IllegalStateException("EOF in CarPlay transport stream")
-                    read += r
-                }
+                readFully(input, header, "EOF in CarPlay transport stream")
 
-                val type = ((header[0].toInt() and 0xFF) shl 8) or (header[1].toInt() and 0xFF)
-                val rawLength = ((header[2].toInt() and 0xFF) shl 24) or
-                        ((header[3].toInt() and 0xFF) shl 16) or
-                        ((header[4].toInt() and 0xFF) shl 8) or
-                        (header[5].toInt() and 0xFF)
+                val type = readPacketType(header)
+                val rawLength = readPacketLength(header)
 
                 // Enforce strict bounds check to prevent OOM / negative array allocation crash
                 if (rawLength <= 0 || rawLength > MAX_CARPLAY_PAYLOAD) {
@@ -71,33 +63,50 @@ class CarPlayEngine : ProjectionEngine {
                 }
 
                 val payload = ByteArray(rawLength)
-                var payloadRead = 0
-                while (payloadRead < rawLength) {
-                    val r = input.read(payload, payloadRead, rawLength - payloadRead)
-                    if (r < 0) throw IllegalStateException("EOF reading CarPlay payload")
-                    payloadRead += r
-                }
+                readFully(input, payload, "EOF reading CarPlay payload")
 
-                when (type) {
-                    PACKET_TYPE_VIDEO -> {
-                        sink.onVideoNal(payload, 0, payload.size, System.nanoTime() / 1000)
-                    }
-                    PACKET_TYPE_AUDIO_MEDIA -> {
-                        sink.onAudioData(AudioChannel.MEDIA, payload, 44100, 2)
-                    }
-                    PACKET_TYPE_AUDIO_ALT -> {
-                        sink.onAudioData(AudioChannel.SPEECH_SIRI_ASSISTANT, payload, 24000, 1)
-                    }
-                    PACKET_TYPE_CONTROL -> {
-                        Log.d(TAG, "AirPlay control event received (${payload.size} bytes)")
-                    }
-                }
+                dispatchPacket(type, payload, sink)
             }
         } catch (e: Exception) {
             Log.w(TAG, "CarPlay loop terminated: ${e.message}")
             sink.onSessionTerminated(e.message ?: "Connection closed")
         } finally {
             stop()
+        }
+    }
+
+    private fun readPacketType(header: ByteArray): Int =
+        ((header[0].toInt() and 0xFF) shl 8) or (header[1].toInt() and 0xFF)
+
+    private fun readPacketLength(header: ByteArray): Int =
+        ((header[2].toInt() and 0xFF) shl 24) or
+                ((header[3].toInt() and 0xFF) shl 16) or
+                ((header[4].toInt() and 0xFF) shl 8) or
+                (header[5].toInt() and 0xFF)
+
+    private fun dispatchPacket(type: Int, payload: ByteArray, sink: MediaSink) {
+        when (type) {
+            PACKET_TYPE_VIDEO -> {
+                sink.onVideoNal(payload, 0, payload.size, System.nanoTime() / 1000)
+            }
+            PACKET_TYPE_AUDIO_MEDIA -> {
+                sink.onAudioData(AudioChannel.MEDIA, payload, 44100, 2)
+            }
+            PACKET_TYPE_AUDIO_ALT -> {
+                sink.onAudioData(AudioChannel.SPEECH_SIRI_ASSISTANT, payload, 24000, 1)
+            }
+            PACKET_TYPE_CONTROL -> {
+                Log.d(TAG, "AirPlay control event received (${payload.size} bytes)")
+            }
+        }
+    }
+
+    private fun readFully(input: InputStream, buffer: ByteArray, eofMessage: String) {
+        var offset = 0
+        while (offset < buffer.size) {
+            val bytesRead = input.read(buffer, offset, buffer.size - offset)
+            if (bytesRead < 0) throw IllegalStateException(eofMessage)
+            offset += bytesRead
         }
     }
 
@@ -126,23 +135,7 @@ class CarPlayEngine : ProjectionEngine {
                 putFloat(x)
                 putFloat(y)
             }.array()
-
-            val packet = ByteArray(8 + payload.size).apply {
-                this[0] = 0
-                this[1] = PACKET_TYPE_CONTROL.toByte()
-                this[2] = ((payload.size shr 24) and 0xFF).toByte()
-                this[3] = ((payload.size shr 16) and 0xFF).toByte()
-                this[4] = ((payload.size shr 8) and 0xFF).toByte()
-                this[5] = (payload.size and 0xFF).toByte()
-                this[6] = 0
-                this[7] = 0
-                System.arraycopy(payload, 0, this, 8, payload.size)
-            }
-
-            synchronized(transport) {
-                transport.outputStream.write(packet)
-                transport.outputStream.flush()
-            }
+            sendControlPayload(transport, payload)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to send CarPlay touch: ${e.message}")
         }
@@ -157,25 +150,28 @@ class CarPlayEngine : ProjectionEngine {
                 putInt(keyCode)
                 put(if (isDown) 1.toByte() else 0.toByte())
             }.array()
-
-            val packet = ByteArray(8 + payload.size).apply {
-                this[0] = 0
-                this[1] = PACKET_TYPE_CONTROL.toByte()
-                this[2] = ((payload.size shr 24) and 0xFF).toByte()
-                this[3] = ((payload.size shr 16) and 0xFF).toByte()
-                this[4] = ((payload.size shr 8) and 0xFF).toByte()
-                this[5] = (payload.size and 0xFF).toByte()
-                this[6] = 0
-                this[7] = 0
-                System.arraycopy(payload, 0, this, 8, payload.size)
-            }
-
-            synchronized(transport) {
-                transport.outputStream.write(packet)
-                transport.outputStream.flush()
-            }
+            sendControlPayload(transport, payload)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to send CarPlay key: ${e.message}")
+        }
+    }
+
+    private fun sendControlPayload(transport: TransportChannel, payload: ByteArray) {
+        val packet = ByteArray(8 + payload.size).apply {
+            this[0] = 0
+            this[1] = PACKET_TYPE_CONTROL.toByte()
+            this[2] = ((payload.size shr 24) and 0xFF).toByte()
+            this[3] = ((payload.size shr 16) and 0xFF).toByte()
+            this[4] = ((payload.size shr 8) and 0xFF).toByte()
+            this[5] = (payload.size and 0xFF).toByte()
+            this[6] = 0
+            this[7] = 0
+            System.arraycopy(payload, 0, this, 8, payload.size)
+        }
+
+        synchronized(transport) {
+            transport.outputStream.write(packet)
+            transport.outputStream.flush()
         }
     }
 }

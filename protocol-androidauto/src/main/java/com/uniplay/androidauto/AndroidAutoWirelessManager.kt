@@ -2,6 +2,7 @@ package com.uniplay.androidauto
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
@@ -61,18 +62,7 @@ class AndroidAutoWirelessManager(
             try {
                 val bonded = adapter.bondedDevices ?: return@Thread
                 for (device in bonded) {
-                    try {
-                        val devName = try { device.name } catch (_: Exception) { "Paired Device" }
-                        Log.i(TAG, "Proactively waking paired device: $devName (${device.address})...")
-                        val socket = device.createRfcommSocketToServiceRecord(AA_BT_UUID)
-                        socket.connect()
-                        Log.i(TAG, "Connected to $devName! Sending Wi-Fi handoff...")
-                        onPhoneHandoffInitiated(devName)
-                        handleBluetoothHandshake(socket, ssid, psk, localIp, port)
-                        break
-                    } catch (e: Exception) {
-                        Log.d(TAG, "Device ${device.address} did not answer active poke: ${e.message}")
-                    }
+                    if (tryWakeBondedDevice(device, ssid, psk, localIp, port)) break
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Error enumerating bonded devices: ${e.message}")
@@ -80,6 +70,29 @@ class AndroidAutoWirelessManager(
         }, "AA-Wireless-BT-Poke").apply {
             isDaemon = true
             start()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun tryWakeBondedDevice(
+        device: BluetoothDevice,
+        ssid: String,
+        psk: String,
+        localIp: String,
+        port: Int
+    ): Boolean {
+        return try {
+            val deviceName = try { device.name } catch (_: Exception) { "Paired Device" }
+            Log.i(TAG, "Proactively waking paired device: $deviceName (${device.address})...")
+            val socket = device.createRfcommSocketToServiceRecord(AA_BT_UUID)
+            socket.connect()
+            Log.i(TAG, "Connected to $deviceName! Sending Wi-Fi handoff...")
+            onPhoneHandoffInitiated(deviceName)
+            handleBluetoothHandshake(socket, ssid, psk, localIp, port)
+            true
+        } catch (e: Exception) {
+            Log.d(TAG, "Device ${device.address} did not answer active poke: ${e.message}")
+            false
         }
     }
 

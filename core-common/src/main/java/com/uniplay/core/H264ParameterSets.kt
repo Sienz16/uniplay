@@ -112,83 +112,101 @@ object H264ParameterSets {
             r.readBits(8) // constraint flags + reserved
             r.readBits(8) // level_idc
             r.readUnsignedExpGolomb() // seq_parameter_set_id
-
-            var chromaFormatIdc = 1
-            val highProfiles = profileIdc == 100 || profileIdc == 110 || profileIdc == 122 ||
-                profileIdc == 244 || profileIdc == 44 || profileIdc == 83 || profileIdc == 86 ||
-                profileIdc == 118 || profileIdc == 128 || profileIdc == 138 || profileIdc == 139 ||
-                profileIdc == 134 || profileIdc == 135
-
-            if (highProfiles) {
-                chromaFormatIdc = r.readUnsignedExpGolomb()
-                if (chromaFormatIdc == 3) r.readBit() // separate_colour_plane_flag
-                r.readUnsignedExpGolomb() // bit_depth_luma_minus8
-                r.readUnsignedExpGolomb() // bit_depth_chroma_minus8
-                r.readBit() // qpprime_y_zero_transform_bypass_flag
-                if (r.readBit() == 1) { // seq_scaling_matrix_present_flag
-                    val lists = if (chromaFormatIdc != 3) 8 else 12
-                    for (l in 0 until lists) {
-                        if (r.readBit() == 1) {
-                            val size = if (l < 6) 16 else 64
-                            var lastScale = 8
-                            var nextScale = 8
-                            for (s in 0 until size) {
-                                if (nextScale != 0) {
-                                    val delta = r.readSignedExpGolomb()
-                                    nextScale = (lastScale + delta + 256) % 256
-                                }
-                                if (nextScale != 0) lastScale = nextScale
-                            }
-                        }
-                    }
-                }
-            }
+            val chromaFormatIdc = readChromaFormat(r, profileIdc)
 
             r.readUnsignedExpGolomb() // log2_max_frame_num_minus4
-            when (val picOrderCntType = r.readUnsignedExpGolomb()) {
-                0 -> r.readUnsignedExpGolomb() // log2_max_pic_order_cnt_lsb_minus4
-                1 -> {
-                    r.readBit() // delta_pic_order_always_zero_flag
-                    r.readSignedExpGolomb() // offset_for_non_ref_pic
-                    r.readSignedExpGolomb() // offset_for_top_to_bottom_field
-                    val cycle = r.readUnsignedExpGolomb()
-                    for (c in 0 until cycle) r.readSignedExpGolomb()
-                }
-                else -> if (picOrderCntType < 0) return null
-            }
+            if (!skipPictureOrderCountParameters(r)) return null
             r.readUnsignedExpGolomb() // max_num_ref_frames
             r.readBit() // gaps_in_frame_num_value_allowed_flag
 
-            val picWidthInMbsMinus1 = r.readUnsignedExpGolomb()
-            val picHeightInMapUnitsMinus1 = r.readUnsignedExpGolomb()
-            val frameMbsOnlyFlag = r.readBit()
-            if (frameMbsOnlyFlag == 0) r.readBit() // mb_adaptive_frame_field_flag
-            r.readBit() // direct_8x8_inference_flag
-
-            var cropLeft = 0
-            var cropRight = 0
-            var cropTop = 0
-            var cropBottom = 0
-            if (r.readBit() == 1) {
-                cropLeft = r.readUnsignedExpGolomb()
-                cropRight = r.readUnsignedExpGolomb()
-                cropTop = r.readUnsignedExpGolomb()
-                cropBottom = r.readUnsignedExpGolomb()
-            }
-
-            val subWidthC = if (chromaFormatIdc == 1 || chromaFormatIdc == 2) 2 else 1
-            val subHeightC = if (chromaFormatIdc == 1) 2 else 1
-            val cropUnitX = if (chromaFormatIdc == 0) 1 else subWidthC
-            val cropUnitY = (if (chromaFormatIdc == 0) 1 else subHeightC) * (2 - frameMbsOnlyFlag)
-
-            val width = (picWidthInMbsMinus1 + 1) * 16 - (cropLeft + cropRight) * cropUnitX
-            val height = (2 - frameMbsOnlyFlag) * (picHeightInMapUnitsMinus1 + 1) * 16 -
-                (cropTop + cropBottom) * cropUnitY
-
-            if (width <= 0 || height <= 0 || width > 16384 || height > 16384) null else width to height
+            readPictureDimensions(r, chromaFormatIdc)
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun readPictureDimensions(reader: BitReader, chromaFormatIdc: Int): Pair<Int, Int>? {
+        val picWidthInMbsMinus1 = reader.readUnsignedExpGolomb()
+        val picHeightInMapUnitsMinus1 = reader.readUnsignedExpGolomb()
+        val frameMbsOnlyFlag = reader.readBit()
+        if (frameMbsOnlyFlag == 0) reader.readBit() // mb_adaptive_frame_field_flag
+        reader.readBit() // direct_8x8_inference_flag
+
+        var cropLeft = 0
+        var cropRight = 0
+        var cropTop = 0
+        var cropBottom = 0
+        if (reader.readBit() == 1) {
+            cropLeft = reader.readUnsignedExpGolomb()
+            cropRight = reader.readUnsignedExpGolomb()
+            cropTop = reader.readUnsignedExpGolomb()
+            cropBottom = reader.readUnsignedExpGolomb()
+        }
+
+        val subWidthC = if (chromaFormatIdc == 1 || chromaFormatIdc == 2) 2 else 1
+        val subHeightC = if (chromaFormatIdc == 1) 2 else 1
+        val cropUnitX = if (chromaFormatIdc == 0) 1 else subWidthC
+        val cropUnitY = (if (chromaFormatIdc == 0) 1 else subHeightC) * (2 - frameMbsOnlyFlag)
+
+        val width = (picWidthInMbsMinus1 + 1) * 16 - (cropLeft + cropRight) * cropUnitX
+        val height = (2 - frameMbsOnlyFlag) * (picHeightInMapUnitsMinus1 + 1) * 16 -
+            (cropTop + cropBottom) * cropUnitY
+
+        return if (width <= 0 || height <= 0 || width > 16384 || height > 16384) null else width to height
+    }
+
+    private fun readChromaFormat(reader: BitReader, profileIdc: Int): Int {
+        if (!usesHighProfileSyntax(profileIdc)) return 1
+
+        val chromaFormatIdc = reader.readUnsignedExpGolomb()
+        if (chromaFormatIdc == 3) reader.readBit() // separate_colour_plane_flag
+        reader.readUnsignedExpGolomb() // bit_depth_luma_minus8
+        reader.readUnsignedExpGolomb() // bit_depth_chroma_minus8
+        reader.readBit() // qpprime_y_zero_transform_bypass_flag
+
+        if (reader.readBit() == 1) skipScalingMatrices(reader, chromaFormatIdc)
+        return chromaFormatIdc
+    }
+
+    private fun usesHighProfileSyntax(profileIdc: Int): Boolean = when (profileIdc) {
+        100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135 -> true
+        else -> false
+    }
+
+    private fun skipScalingMatrices(reader: BitReader, chromaFormatIdc: Int) {
+        val listCount = if (chromaFormatIdc != 3) 8 else 12
+        for (listIndex in 0 until listCount) {
+            if (reader.readBit() == 1) {
+                skipScalingList(reader, if (listIndex < 6) 16 else 64)
+            }
+        }
+    }
+
+    private fun skipScalingList(reader: BitReader, size: Int) {
+        var lastScale = 8
+        var nextScale = 8
+        for (index in 0 until size) {
+            if (nextScale != 0) {
+                val delta = reader.readSignedExpGolomb()
+                nextScale = (lastScale + delta + 256) % 256
+            }
+            if (nextScale != 0) lastScale = nextScale
+        }
+    }
+
+    private fun skipPictureOrderCountParameters(reader: BitReader): Boolean {
+        when (val picOrderCntType = reader.readUnsignedExpGolomb()) {
+            0 -> reader.readUnsignedExpGolomb() // log2_max_pic_order_cnt_lsb_minus4
+            1 -> {
+                reader.readBit() // delta_pic_order_always_zero_flag
+                reader.readSignedExpGolomb() // offset_for_non_ref_pic
+                reader.readSignedExpGolomb() // offset_for_top_to_bottom_field
+                val cycle = reader.readUnsignedExpGolomb()
+                for (index in 0 until cycle) reader.readSignedExpGolomb()
+            }
+            else -> if (picOrderCntType < 0) return false
+        }
+        return true
     }
 
     /** Bit reader over the SPS RBSP. */

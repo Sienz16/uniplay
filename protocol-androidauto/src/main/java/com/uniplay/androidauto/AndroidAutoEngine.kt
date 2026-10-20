@@ -129,106 +129,114 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         val dataIn = DataInputStream(input)
 
         try {
-            // STEP 1 & 2: Version Exchange (v1.2) with timeout and up to 4 retries
-            var versionReceived = false
-            val verBuf = ByteArray(Messages.DEF_BUFFER_LENGTH)
-
-            for (attempt in 1..4) {
-                Log.i(TAG, "Handshake: Sending AAP Version Request (attempt $attempt/4)...")
-                val versionReq = Messages.versionRequest
-                conn.sendBlocking(versionReq, versionReq.size, 2000)
-
-                val deadline = System.currentTimeMillis() + 2500
-                while (System.currentTimeMillis() < deadline) {
-                    val remaining = (deadline - System.currentTimeMillis()).toInt().coerceAtLeast(100)
-                    val ret = conn.recvBlocking(verBuf, verBuf.size, remaining, false)
-                    if (ret >= 6
-                        && verBuf[0] == 0.toByte()
-                        && verBuf[4] == 0.toByte()
-                        && verBuf[5] == 2.toByte()
-                    ) {
-                        Log.i(TAG, "Handshake: Version Response received! ($ret bytes, attempt $attempt)")
-                        versionReceived = true
-                        break
-                    }
-                    if (ret <= 0) break
-                }
-                if (versionReceived) break
-                Thread.sleep(300)
-            }
-
-            if (!versionReceived) {
-                throw IllegalStateException("Phone did not respond. Please toggle 'Stop head unit server' then 'Start head unit server' on your phone.")
-            }
-
-            // STEP 3: Perform TLS 1.2 Handshake (Channel 0, Msg 3)
-            val ctx = context
-            if (ctx != null) {
-                Log.i(TAG, "Handshake: Initializing SSL Context & Keys...")
-                val keyManager = SingleKeyKeyManager(ctx)
-                val ssl = AapSslContext(keyManager)
-                sslContext = ssl
-
-                Log.i(TAG, "Handshake: Executing TLS 1.2 Authentication with Phone...")
-                val sslSuccess = ssl.performHandshake(conn)
-                if (sslSuccess) {
-                    isSslHandshakeComplete = true
-                    ssl.postHandshakeReset()
-                    Log.i(TAG, "Handshake: TLS Handshake SUCCESSFUL! Sending Status OK to Phone...")
-                    val statusOk = Messages.statusOk
-                    conn.sendBlocking(statusOk, statusOk.size, 2000)
-                    Log.i(TAG, "Handshake: Status OK sent! Awaiting Service Discovery Request...")
-                } else {
-                    Log.w(TAG, "Handshake: TLS Handshake failed, proceeding with fallback...")
-                }
-            } else {
-                Log.w(TAG, "Context unavailable; skipping TLS handshake.")
-            }
+            exchangeAapVersion(conn)
+            performTlsHandshake(conn)
 
             // Reset socket timeout to non-blocking stream mode
             (transport as? SocketTransportChannel)?.socket?.soTimeout = 0
-
-            // STEP 4: Standard AAP Message Loop
-            val headerBuffer = ByteArray(4)
-            while (running.get()) {
-                dataIn.readFully(headerBuffer)
-
-                val channel = headerBuffer[0].toInt() and 0xFF
-                val flags = headerBuffer[1].toInt() and 0xFF
-                val length = ((headerBuffer[2].toInt() and 0xFF) shl 8) or (headerBuffer[3].toInt() and 0xFF)
-
-                // Critical AAP Wire Protocol: When flags has 0x09 (FLAG_FIRST_FRAGMENT), the wire contains 4 bytes of total unfragmented length right after the header!
-                if (flags == 0x09) {
-                    val declaredTotal = dataIn.readInt()
-                }
-
-                if (length <= 0 || length > MAX_AAP_PAYLOAD) {
-                    throw IllegalArgumentException("Invalid AAP frame length: $length bytes (channel=$channel, flags=0x${flags.toString(16)})")
-                }
-
-                val payload = ByteArray(length)
-                dataIn.readFully(payload)
-
-                val decryptedPayload = if (isSslHandshakeComplete && (flags and 0x08 != 0)) {
-                    val decrypted = sslContext?.decrypt(0, payload.size, payload)
-                    if (decrypted != null) {
-                        val plain = ByteArray(decrypted.limit)
-                        System.arraycopy(decrypted.data, 0, plain, 0, decrypted.limit)
-                        plain
-                    } else {
-                        payload
-                    }
-                } else {
-                    payload
-                }
-
-                dispatchPacket(channel, flags, decryptedPayload, output, sink)
-            }
+            receiveAapMessages(dataIn, output, sink)
         } catch (e: Exception) {
             Log.w(TAG, "Android Auto loop terminated", e)
             sink.onSessionTerminated(e.message ?: "Connection closed")
         } finally {
             stop()
+        }
+    }
+
+    private fun exchangeAapVersion(conn: TransportAccessoryConnection) {
+        var versionReceived = false
+        val verBuf = ByteArray(Messages.DEF_BUFFER_LENGTH)
+
+        for (attempt in 1..4) {
+            Log.i(TAG, "Handshake: Sending AAP Version Request (attempt $attempt/4)...")
+            val versionReq = Messages.versionRequest
+            conn.sendBlocking(versionReq, versionReq.size, 2000)
+
+            val deadline = System.currentTimeMillis() + 2500
+            while (System.currentTimeMillis() < deadline) {
+                val remaining = (deadline - System.currentTimeMillis()).toInt().coerceAtLeast(100)
+                val ret = conn.recvBlocking(verBuf, verBuf.size, remaining, false)
+                if (ret >= 6
+                    && verBuf[0] == 0.toByte()
+                    && verBuf[4] == 0.toByte()
+                    && verBuf[5] == 2.toByte()
+                ) {
+                    Log.i(TAG, "Handshake: Version Response received! ($ret bytes, attempt $attempt)")
+                    versionReceived = true
+                    break
+                }
+                if (ret <= 0) break
+            }
+            if (versionReceived) break
+            Thread.sleep(300)
+        }
+
+        if (!versionReceived) {
+            throw IllegalStateException("Phone did not respond. Please toggle 'Stop head unit server' then 'Start head unit server' on your phone.")
+        }
+    }
+
+    private fun performTlsHandshake(conn: TransportAccessoryConnection) {
+        val ctx = context
+        if (ctx == null) {
+            Log.w(TAG, "Context unavailable; skipping TLS handshake.")
+            return
+        }
+
+        Log.i(TAG, "Handshake: Initializing SSL Context & Keys...")
+        val keyManager = SingleKeyKeyManager(ctx)
+        val ssl = AapSslContext(keyManager)
+        sslContext = ssl
+
+        Log.i(TAG, "Handshake: Executing TLS 1.2 Authentication with Phone...")
+        if (ssl.performHandshake(conn)) {
+            isSslHandshakeComplete = true
+            ssl.postHandshakeReset()
+            Log.i(TAG, "Handshake: TLS Handshake SUCCESSFUL! Sending Status OK to Phone...")
+            val statusOk = Messages.statusOk
+            conn.sendBlocking(statusOk, statusOk.size, 2000)
+            Log.i(TAG, "Handshake: Status OK sent! Awaiting Service Discovery Request...")
+        } else {
+            Log.w(TAG, "Handshake: TLS Handshake failed, proceeding with fallback...")
+        }
+    }
+
+    private fun receiveAapMessages(dataIn: DataInputStream, output: OutputStream, sink: MediaSink) {
+        val headerBuffer = ByteArray(4)
+
+        while (running.get()) {
+            dataIn.readFully(headerBuffer)
+
+            val channel = headerBuffer[0].toInt() and 0xFF
+            val flags = headerBuffer[1].toInt() and 0xFF
+            val length = ((headerBuffer[2].toInt() and 0xFF) shl 8) or (headerBuffer[3].toInt() and 0xFF)
+
+            // Critical AAP Wire Protocol: When flags has 0x09 (FLAG_FIRST_FRAGMENT), the wire contains 4 bytes of total unfragmented length right after the header!
+            if (flags == 0x09) {
+                val declaredTotal = dataIn.readInt()
+            }
+
+            if (length <= 0 || length > MAX_AAP_PAYLOAD) {
+                throw IllegalArgumentException("Invalid AAP frame length: $length bytes (channel=$channel, flags=0x${flags.toString(16)})")
+            }
+
+            val payload = ByteArray(length)
+            dataIn.readFully(payload)
+
+            val decryptedPayload = if (isSslHandshakeComplete && (flags and 0x08 != 0)) {
+                val decrypted = sslContext?.decrypt(0, payload.size, payload)
+                if (decrypted != null) {
+                    val plain = ByteArray(decrypted.limit)
+                    System.arraycopy(decrypted.data, 0, plain, 0, decrypted.limit)
+                    plain
+                } else {
+                    payload
+                }
+            } else {
+                payload
+            }
+
+            dispatchPacket(channel, flags, decryptedPayload, output, sink)
         }
     }
 
@@ -361,100 +369,8 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         val hasType = isControlMessage || flags == FLAG_FIRST || flags == FLAG_SINGLE
         val msgType = if (hasType && payload.size >= 2) readMsgType(payload) else -1
 
-        if (hasType) {
-            when (msgType) {
-                Control.ControlMsgType.MESSAGE_CHANNEL_OPEN_REQUEST_VALUE -> {
-                    grantChannelOpen(CHANNEL_VIDEO, output)
-                    return
-                }
-
-                Media.MsgType.MEDIA_MESSAGE_SETUP_VALUE -> {
-                    Log.i(TAG, "AAP Video Setup Request. Replying with Media Config (maxUnacked=12)...")
-                    val config = Media.Config.newBuilder()
-                        .setStatus(Media.Config.ConfigStatus.HEADUNIT)
-                        .setMaxUnacked(12)
-                        .addConfigurationIndices(0)
-                        .build()
-                    sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_CONFIG_VALUE, config)
-
-                    Log.i(TAG, "AAP Announcing Video Focus PROJECTED...")
-                    val focusNotification = Media.VideoFocusNotification.newBuilder()
-                        .setMode(Media.VideoFocusMode.VIDEO_FOCUS_PROJECTED)
-                        .setUnsolicited(false)
-                        .build()
-                    sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION_VALUE, focusNotification)
-                    return
-                }
-
-                Media.MsgType.MEDIA_MESSAGE_START_VALUE -> {
-                    val sessionId = if (payload.size >= 4) {
-                        ((payload[2].toInt() and 0xFF) shl 8) or (payload[3].toInt() and 0xFF)
-                    } else 0
-                    sessionIds[CHANNEL_VIDEO] = sessionId
-                    Log.i(TAG, "AAP Video Stream Start confirmed (sessionId=$sessionId)")
-                    return
-                }
-
-                Media.MsgType.MEDIA_MESSAGE_VIDEO_FOCUS_REQUEST_VALUE -> {
-                    Log.i(TAG, "AAP Video Focus Request received. Granting PROJECTED focus...")
-                    val response = Media.VideoFocusNotification.newBuilder()
-                        .setMode(Media.VideoFocusMode.VIDEO_FOCUS_PROJECTED)
-                        .setUnsolicited(false)
-                        .build()
-                    sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION_VALUE, response)
-                    return
-                }
-            }
-        }
-
-        when (flags) {
-            FLAG_SINGLE -> {
-                val payloadOffset = findVideoPayloadOffset(payload)
-                if (payloadOffset < 0) {
-                    Log.w(TAG, "Single video message has no start code (len=${payload.size}); dropping it")
-                    return
-                }
-                deliverVideoFrame(payload.copyOfRange(payloadOffset, payload.size), sink)
-            }
-
-            FLAG_FIRST -> {
-                val payloadOffset = findVideoPayloadOffset(payload)
-                if (payloadOffset < 0) {
-                    Log.w(TAG, "First video fragment has no start code (len=${payload.size}); dropping the frame")
-                    videoAssembling = false
-                    videoReassemblyBuffer.reset()
-                    return
-                }
-                videoAssembling = true
-                videoReassemblyBuffer.reset()
-                videoReassemblyBuffer.write(payload, payloadOffset, payload.size - payloadOffset)
-            }
-
-            FLAG_MIDDLE -> {
-                if (!videoAssembling) {
-                    Log.w(TAG, "Orphaned video fragment (flags=$flags); dropping it")
-                    return
-                }
-                videoReassemblyBuffer.write(payload, 0, payload.size)
-            }
-
-            FLAG_LAST -> {
-                if (!videoAssembling) {
-                    Log.w(TAG, "Orphaned video fragment (flags=$flags); dropping it")
-                    return
-                }
-                videoReassemblyBuffer.write(payload, 0, payload.size)
-                videoAssembling = false
-                val frame = videoReassemblyBuffer.toByteArray()
-                videoReassemblyBuffer.reset()
-                if (frame.isNotEmpty()) deliverVideoFrame(frame, sink)
-            }
-
-            else -> {
-                Log.w(TAG, "Unknown video message flags 0x${flags.toString(16)}; ignoring")
-                return
-            }
-        }
+        if (hasType && handleVideoControlMessage(msgType, payload, output)) return
+        if (!handleVideoFrameFragment(flags, payload, sink)) return
 
         // Acknowledge the data and codec-config messages, the way every other head
         // unit does. The window the phone keeps open is counted in messages, so a
@@ -464,6 +380,112 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         ) {
             sendVideoAck(output)
         }
+    }
+
+    private fun handleVideoControlMessage(msgType: Int, payload: ByteArray, output: OutputStream): Boolean {
+        when (msgType) {
+            Control.ControlMsgType.MESSAGE_CHANNEL_OPEN_REQUEST_VALUE -> {
+                grantChannelOpen(CHANNEL_VIDEO, output)
+                return true
+            }
+
+            Media.MsgType.MEDIA_MESSAGE_SETUP_VALUE -> {
+                Log.i(TAG, "AAP Video Setup Request. Replying with Media Config (maxUnacked=12)...")
+                val config = Media.Config.newBuilder()
+                    .setStatus(Media.Config.ConfigStatus.HEADUNIT)
+                    .setMaxUnacked(12)
+                    .addConfigurationIndices(0)
+                    .build()
+                sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_CONFIG_VALUE, config)
+
+                Log.i(TAG, "AAP Announcing Video Focus PROJECTED...")
+                val focusNotification = Media.VideoFocusNotification.newBuilder()
+                    .setMode(Media.VideoFocusMode.VIDEO_FOCUS_PROJECTED)
+                    .setUnsolicited(false)
+                    .build()
+                sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION_VALUE, focusNotification)
+                return true
+            }
+
+            Media.MsgType.MEDIA_MESSAGE_START_VALUE -> {
+                val sessionId = if (payload.size >= 4) {
+                    ((payload[2].toInt() and 0xFF) shl 8) or (payload[3].toInt() and 0xFF)
+                } else 0
+                sessionIds[CHANNEL_VIDEO] = sessionId
+                Log.i(TAG, "AAP Video Stream Start confirmed (sessionId=$sessionId)")
+                return true
+            }
+
+            Media.MsgType.MEDIA_MESSAGE_VIDEO_FOCUS_REQUEST_VALUE -> {
+                Log.i(TAG, "AAP Video Focus Request received. Granting PROJECTED focus...")
+                val response = Media.VideoFocusNotification.newBuilder()
+                    .setMode(Media.VideoFocusMode.VIDEO_FOCUS_PROJECTED)
+                    .setUnsolicited(false)
+                    .build()
+                sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION_VALUE, response)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun handleVideoFrameFragment(flags: Int, payload: ByteArray, sink: MediaSink): Boolean {
+        return when (flags) {
+            FLAG_SINGLE -> handleSingleVideoFrame(payload, sink)
+            FLAG_FIRST -> startVideoFrameAssembly(payload)
+            FLAG_MIDDLE -> appendVideoFrameFragment(flags, payload)
+            FLAG_LAST -> finishVideoFrameAssembly(flags, payload, sink)
+            else -> {
+                Log.w(TAG, "Unknown video message flags 0x${flags.toString(16)}; ignoring")
+                false
+            }
+        }
+    }
+
+    private fun handleSingleVideoFrame(payload: ByteArray, sink: MediaSink): Boolean {
+        val payloadOffset = findVideoPayloadOffset(payload)
+        if (payloadOffset < 0) {
+            Log.w(TAG, "Single video message has no start code (len=${payload.size}); dropping it")
+            return false
+        }
+        deliverVideoFrame(payload.copyOfRange(payloadOffset, payload.size), sink)
+        return true
+    }
+
+    private fun startVideoFrameAssembly(payload: ByteArray): Boolean {
+        val payloadOffset = findVideoPayloadOffset(payload)
+        if (payloadOffset < 0) {
+            Log.w(TAG, "First video fragment has no start code (len=${payload.size}); dropping the frame")
+            videoAssembling = false
+            videoReassemblyBuffer.reset()
+            return false
+        }
+        videoAssembling = true
+        videoReassemblyBuffer.reset()
+        videoReassemblyBuffer.write(payload, payloadOffset, payload.size - payloadOffset)
+        return true
+    }
+
+    private fun appendVideoFrameFragment(flags: Int, payload: ByteArray): Boolean {
+        if (!videoAssembling) {
+            Log.w(TAG, "Orphaned video fragment (flags=$flags); dropping it")
+            return false
+        }
+        videoReassemblyBuffer.write(payload, 0, payload.size)
+        return true
+    }
+
+    private fun finishVideoFrameAssembly(flags: Int, payload: ByteArray, sink: MediaSink): Boolean {
+        if (!videoAssembling) {
+            Log.w(TAG, "Orphaned video fragment (flags=$flags); dropping it")
+            return false
+        }
+        videoReassemblyBuffer.write(payload, 0, payload.size)
+        videoAssembling = false
+        val frame = videoReassemblyBuffer.toByteArray()
+        videoReassemblyBuffer.reset()
+        if (frame.isNotEmpty()) deliverVideoFrame(frame, sink)
+        return true
     }
 
     private fun sendVideoAck(output: OutputStream) {
@@ -707,16 +729,7 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
 
         inputExecutor.execute {
             try {
-                val pointerAction = when (action) {
-                    MotionEvent.ACTION_DOWN -> Input.TouchEvent.PointerAction.TOUCH_ACTION_DOWN
-                    MotionEvent.ACTION_UP -> Input.TouchEvent.PointerAction.TOUCH_ACTION_UP
-                    MotionEvent.ACTION_MOVE -> Input.TouchEvent.PointerAction.TOUCH_ACTION_MOVE
-                    MotionEvent.ACTION_CANCEL -> Input.TouchEvent.PointerAction.TOUCH_ACTION_CANCEL
-                    MotionEvent.ACTION_OUTSIDE -> Input.TouchEvent.PointerAction.TOUCH_ACTION_OUTSIDE
-                    MotionEvent.ACTION_POINTER_DOWN -> Input.TouchEvent.PointerAction.TOUCH_ACTION_POINTER_DOWN
-                    MotionEvent.ACTION_POINTER_UP -> Input.TouchEvent.PointerAction.TOUCH_ACTION_POINTER_UP
-                    else -> return@execute
-                }
+                val pointerAction = pointerActionFor(action) ?: return@execute
 
                 val pointer = Input.TouchEvent.Pointer.newBuilder()
                     .setPointerId(0)
@@ -748,6 +761,17 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
                 Log.w(TAG, "Failed to send AAP touch", e)
             }
         }
+    }
+
+    private fun pointerActionFor(action: Int): Input.TouchEvent.PointerAction? = when (action) {
+        MotionEvent.ACTION_DOWN -> Input.TouchEvent.PointerAction.TOUCH_ACTION_DOWN
+        MotionEvent.ACTION_UP -> Input.TouchEvent.PointerAction.TOUCH_ACTION_UP
+        MotionEvent.ACTION_MOVE -> Input.TouchEvent.PointerAction.TOUCH_ACTION_MOVE
+        MotionEvent.ACTION_CANCEL -> Input.TouchEvent.PointerAction.TOUCH_ACTION_CANCEL
+        MotionEvent.ACTION_OUTSIDE -> Input.TouchEvent.PointerAction.TOUCH_ACTION_OUTSIDE
+        MotionEvent.ACTION_POINTER_DOWN -> Input.TouchEvent.PointerAction.TOUCH_ACTION_POINTER_DOWN
+        MotionEvent.ACTION_POINTER_UP -> Input.TouchEvent.PointerAction.TOUCH_ACTION_POINTER_UP
+        else -> null
     }
 
     override fun sendKeyEvent(keyCode: Int, isDown: Boolean) {

@@ -224,29 +224,33 @@ class ZeroCopyVideoDecoder(
             while (true) {
                 val outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, 0)
                 when {
-                    outputBufferIndex >= 0 -> {
-                        decoder.releaseOutputBuffer(outputBufferIndex, true)
-                        renderedFrames++
-                        if (!hasRenderedFrame) {
-                            hasRenderedFrame = true
-                            Log.i(TAG, "First frame rendered to surface (${streamWidth}x$streamHeight)")
-                            onFirstFrameRendered(streamWidth, streamHeight)
-                        }
-                    }
-                    outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        val out = decoder.outputFormat
-                        Log.i(
-                            TAG,
-                            "Output format changed: ${out.getInteger(MediaFormat.KEY_WIDTH)}x" +
-                                out.getInteger(MediaFormat.KEY_HEIGHT)
-                        )
-                    }
+                    outputBufferIndex >= 0 -> renderOutputBuffer(decoder, outputBufferIndex)
+                    outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> logOutputFormat(decoder)
                     else -> return
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Output buffer drain notice: ${e.message}")
         }
+    }
+
+    private fun renderOutputBuffer(decoder: MediaCodec, bufferIndex: Int) {
+        decoder.releaseOutputBuffer(bufferIndex, true)
+        renderedFrames++
+        if (hasRenderedFrame) return
+
+        hasRenderedFrame = true
+        Log.i(TAG, "First frame rendered to surface (${streamWidth}x$streamHeight)")
+        onFirstFrameRendered(streamWidth, streamHeight)
+    }
+
+    private fun logOutputFormat(decoder: MediaCodec) {
+        val format = decoder.outputFormat
+        Log.i(
+            TAG,
+            "Output format changed: ${format.getInteger(MediaFormat.KEY_WIDTH)}x" +
+                format.getInteger(MediaFormat.KEY_HEIGHT)
+        )
     }
 
     @Synchronized

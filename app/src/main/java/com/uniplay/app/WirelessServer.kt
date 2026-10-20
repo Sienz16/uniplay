@@ -76,36 +76,9 @@ class WirelessServer(
         try {
             val transport = SocketTransportChannel(socket, TransportType.WIRELESS_WIFI)
             activeSocketChannel = transport
-
-            // Peek initial bytes to detect protocol
             val bufferedInput = BufferedInputStream(socket.getInputStream())
-            bufferedInput.mark(16)
-            val peekBuffer = ByteArray(4)
-            val bytesRead = bufferedInput.read(peekBuffer, 0, 4)
-            bufferedInput.reset()
-
-            // If starts with RTSP/AirPlay ascii (e.g. 'O' for OPTIONS, 'A' for ANNOUNCE, 'P' for POST) -> CarPlay
-            // If starts with binary 0x00 or AAP channel header (0, 1, 2) -> Android Auto
-            val detectedType = if (bytesRead >= 1) {
-                val firstChar = peekBuffer[0].toInt().toChar()
-                if (firstChar in 'A'..'Z') {
-                    Log.i(TAG, "Detected Apple CarPlay AirPlay RTSP handshake")
-                    ProjectionType.CARPLAY
-                } else {
-                    Log.i(TAG, "Detected Google Android Auto AAP framing")
-                    ProjectionType.ANDROID_AUTO
-                }
-            } else {
-                ProjectionType.ANDROID_AUTO
-            }
-
-            // Wrap buffered input back into a proxy transport
-            val proxyTransport = object : TransportChannel {
-                override val type: TransportType = TransportType.WIRELESS_WIFI
-                override val inputStream: InputStream = bufferedInput
-                override val outputStream: OutputStream = socket.getOutputStream()
-                override fun close() = transport.close()
-            }
+            val detectedType = detectProjectionType(bufferedInput)
+            val proxyTransport = createProxyTransport(socket, bufferedInput, transport)
 
             deviceRouter.onManualSelect(detectedType, proxyTransport, sink)
             onStatusUpdate("Connected: ${detectedType.name} (${remoteIpSafe(socket)})", true)
@@ -113,6 +86,37 @@ class WirelessServer(
         } catch (e: Exception) {
             Log.e(TAG, "Error handling client connection", e)
             onStatusUpdate("Connection failed: ${e.message}", false)
+        }
+    }
+
+    private fun detectProjectionType(input: BufferedInputStream): ProjectionType {
+        input.mark(16)
+        val peekBuffer = ByteArray(4)
+        val bytesRead = input.read(peekBuffer, 0, peekBuffer.size)
+        input.reset()
+
+        if (bytesRead < 1) return ProjectionType.ANDROID_AUTO
+
+        // AirPlay RTSP starts with an uppercase request verb; AAP starts with a binary channel header.
+        if (peekBuffer[0].toInt().toChar() in 'A'..'Z') {
+            Log.i(TAG, "Detected Apple CarPlay AirPlay RTSP handshake")
+            return ProjectionType.CARPLAY
+        }
+
+        Log.i(TAG, "Detected Google Android Auto AAP framing")
+        return ProjectionType.ANDROID_AUTO
+    }
+
+    private fun createProxyTransport(
+        socket: Socket,
+        bufferedInput: BufferedInputStream,
+        transport: SocketTransportChannel
+    ): TransportChannel {
+        return object : TransportChannel {
+            override val type: TransportType = TransportType.WIRELESS_WIFI
+            override val inputStream: InputStream = bufferedInput
+            override val outputStream: OutputStream = socket.getOutputStream()
+            override fun close() = transport.close()
         }
     }
 

@@ -5,6 +5,7 @@ import android.net.wifi.WifiManager
 import android.util.Log
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.util.Enumeration
 
 object NetworkUtils {
     private const val TAG = "NetworkUtils"
@@ -15,35 +16,43 @@ object NetworkUtils {
     fun getLocalIpAddress(context: Context? = null): String {
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return "127.0.0.1"
-            for (intf in interfaces) {
-                // Look for active non-loopback wireless/hotspot interfaces (wlan0, ap0, p2p0)
-                if (intf.isLoopback || !intf.isUp) continue
-                val name = intf.name.lowercase()
-                val isWireless = name.contains("wlan") || name.contains("ap") || name.contains("p2p") || name.contains("rndis")
-
-                for (addr in intf.inetAddresses) {
-                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
-                        val host = addr.hostAddress ?: continue
-                        if (isWireless) {
-                            return host
-                        }
-                    }
-                }
-            }
+            findIpv4Address(interfaces, wirelessOnly = true)?.let { return it }
 
             // Fallback: check any IPv4 non-loopback
-            for (intf in NetworkInterface.getNetworkInterfaces()) {
-                if (intf.isLoopback || !intf.isUp) continue
-                for (addr in intf.inetAddresses) {
-                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
-                        return addr.hostAddress ?: "127.0.0.1"
-                    }
-                }
-            }
+            val fallbackInterfaces = NetworkInterface.getNetworkInterfaces()!!
+            findIpv4Address(fallbackInterfaces, wirelessOnly = false)?.let { return it }
         } catch (e: Exception) {
             Log.e(TAG, "Error resolving IP address", e)
         }
         return "127.0.0.1"
+    }
+
+    private fun findIpv4Address(
+        interfaces: Enumeration<NetworkInterface>,
+        wirelessOnly: Boolean
+    ): String? {
+        for (intf in interfaces) {
+            if (intf.isLoopback || !intf.isUp) continue
+            val isWireless = wirelessOnly && isWirelessInterface(intf.name)
+
+            for (address in intf.inetAddresses) {
+                if (address.isLoopbackAddress || address !is Inet4Address) continue
+
+                val host = address.hostAddress
+                if (wirelessOnly) {
+                    if (isWireless && host != null) return host
+                } else {
+                    return host ?: "127.0.0.1"
+                }
+            }
+        }
+        return null
+    }
+
+    private fun isWirelessInterface(name: String): Boolean {
+        val normalizedName = name.lowercase()
+        return normalizedName.contains("wlan") || normalizedName.contains("ap") ||
+            normalizedName.contains("p2p") || normalizedName.contains("rndis")
     }
 
     /**

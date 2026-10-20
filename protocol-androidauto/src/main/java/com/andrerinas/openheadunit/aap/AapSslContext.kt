@@ -29,55 +29,24 @@ class AapSslContext(keyManager: SingleKeyKeyManager): AapSsl {
         // Hard cap on the entire SSL phase.
         val deadline = android.os.SystemClock.elapsedRealtime() + SSL_HANDSHAKE_TIMEOUT_MS
 
-        while (getHandshakeStatus() != SSLEngineResult.HandshakeStatus.FINISHED &&
-                getHandshakeStatus() != SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
+        while (true) {
+            val handshakeStatus = getHandshakeStatus()
+            if (handshakeStatus == SSLEngineResult.HandshakeStatus.FINISHED ||
+                handshakeStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING
+            ) break
 
             if (android.os.SystemClock.elapsedRealtime() >= deadline) {
                 AppLog.e("SSL Handshake: Timed out after ${SSL_HANDSHAKE_TIMEOUT_MS}ms")
                 return false
             }
 
-            when (getHandshakeStatus()) {
+            when (handshakeStatus) {
                 SSLEngineResult.HandshakeStatus.NEED_UNWRAP -> {
-                    // If we don't have enough data for a meaningful unwrap, read a full AAP message
-                    if (pendingTlsData.isEmpty()) {
-                        val messageData = readAapMessage(connection) ?: return false
-                        pendingTlsData = messageData
-                    }
-
-                    rxBuffer.clear()
-                    val data = ByteBuffer.wrap(pendingTlsData)
-                    val result = sslEngine.unwrap(data, rxBuffer)
-                    runDelegatedTasks(result, sslEngine)
-
-                    when (result.status) {
-                        SSLEngineResult.Status.OK -> {
-                            // Keep any unconsumed bytes (e.g. next TLS record already in the buffer).
-                            pendingTlsData = if (data.hasRemaining())
-                                ByteArray(data.remaining()).also { data.get(it) }
-                            else ByteArray(0)
-                        }
-                        SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
-                            // The current pendingTlsData doesn't contain a full TLS record.
-                            // Read another AAP message and append it.
-                            val nextMessage = readAapMessage(connection) ?: return false
-                            pendingTlsData += nextMessage
-                            AppLog.d("SSL Handshake: buffered ${pendingTlsData.size} B after underflow")
-                        }
-                        else -> {
-                            AppLog.e("SSL Handshake: unwrap failed with status ${result.status}")
-                            return false
-                        }
-                    }
+                    pendingTlsData = unwrapHandshakeData(connection, pendingTlsData) ?: return false
                 }
 
                 SSLEngineResult.HandshakeStatus.NEED_WRAP -> {
-                    val handshakeData = handshakeRead()
-                    val bio = Messages.createRawMessage(0, 3, 3, handshakeData)
-                    if (connection.sendBlocking(bio, bio.size, 2000) < 0) {
-                        AppLog.e("SSL Handshake: Send failed")
-                        return false
-                    }
+                    if (!sendHandshakeData(connection)) return false
                 }
 
                 SSLEngineResult.HandshakeStatus.NEED_TASK -> {
@@ -85,25 +54,74 @@ class AapSslContext(keyManager: SingleKeyKeyManager): AapSsl {
                 }
 
                 else -> {
-                    AppLog.e("SSL Handshake: Unexpected status ${getHandshakeStatus()}")
+                    AppLog.e("SSL Handshake: Unexpected status $handshakeStatus")
                     return false
                 }
             }
         }
         
+        logHandshakeComplete()
+        return true
+    }
+
+    private fun sendHandshakeData(connection: AccessoryConnection): Boolean {
+        val handshakeData = handshakeRead()
+        val bio = Messages.createRawMessage(0, 3, 3, handshakeData)
+        if (connection.sendBlocking(bio, bio.size, 2000) < 0) {
+            AppLog.e("SSL Handshake: Send failed")
+            return false
+        }
+        return true
+    }
+
+    private fun logHandshakeComplete() {
         val sessionId = sslEngine.session?.id
         if (sessionId != null && sessionId.isNotEmpty()) {
             AppLog.i("SSL handshake complete. Session id: ${android.util.Base64.encodeToString(sessionId, android.util.Base64.NO_WRAP)}")
         } else {
             AppLog.i("SSL handshake complete. No session id (full handshake).")
         }
-        return true
     }
 
     /**
      * Reads a single complete AAP message from the connection.
      * This ensures that we always respect AAP framing boundaries.
      */
+    private fun unwrapHandshakeData(
+        connection: AccessoryConnection,
+        pendingTlsData: ByteArray
+    ): ByteArray? {
+        // If no bytes are buffered, read a complete AAP message before unwrapping.
+        val input = if (pendingTlsData.isEmpty()) {
+            readAapMessage(connection) ?: return null
+        } else {
+            pendingTlsData
+        }
+
+        rxBuffer.clear()
+        val data = ByteBuffer.wrap(input)
+        val result = sslEngine.unwrap(data, rxBuffer)
+        runDelegatedTasks(result, sslEngine)
+
+        return when (result.status) {
+            SSLEngineResult.Status.OK -> {
+                // Keep any unconsumed bytes (e.g. next TLS record already in the buffer).
+                if (data.hasRemaining()) ByteArray(data.remaining()).also { data.get(it) } else ByteArray(0)
+            }
+            SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
+                // The current data does not contain a full TLS record, so append another AAP message.
+                val nextMessage = readAapMessage(connection) ?: return null
+                (input + nextMessage).also {
+                    AppLog.d("SSL Handshake: buffered ${it.size} B after underflow")
+                }
+            }
+            else -> {
+                AppLog.e("SSL Handshake: unwrap failed with status ${result.status}")
+                null
+            }
+        }
+    }
+
     private fun readAapMessage(connection: AccessoryConnection): ByteArray? {
         val header = ByteArray(6)
         // Read exactly 6 bytes for the AAP header
@@ -274,18 +292,9 @@ class AapSslContext(keyManager: SingleKeyKeyManager): AapSsl {
                 plaintextHolder
             } catch (e: Exception) {
                 // Check for Magic Garbage disconnect signal from Wireless Helper
-                if (length >= 16) {
-                    var allFF = true
-                    for (i in 0 until 16) {
-                        if (buffer[start + i] != 0xFF.toByte()) {
-                            allFF = false
-                            break
-                        }
-                    }
-                    if (allFF) {
-                        AppLog.i("SSL Decrypt: Magic Garbage detected. Marking as clean user disconnect.")
-                        isUserDisconnect = true
-                    }
+                if (isMagicGarbageDisconnect(buffer, start, length)) {
+                    AppLog.i("SSL Decrypt: Magic Garbage detected. Marking as clean user disconnect.")
+                    isUserDisconnect = true
                 }
                 
                 if (!isUserDisconnect) {
@@ -296,6 +305,14 @@ class AapSslContext(keyManager: SingleKeyKeyManager): AapSsl {
         }
         statusLine?.let { AppLog.d(it) }
         return decrypted
+    }
+
+    private fun isMagicGarbageDisconnect(buffer: ByteArray, start: Int, length: Int): Boolean {
+        if (length < 16) return false
+        for (index in 0 until 16) {
+            if (buffer[start + index] != 0xFF.toByte()) return false
+        }
+        return true
     }
 
     override fun encrypt(offset: Int, length: Int, buffer: ByteArray): ByteArrayWithLimit? {
