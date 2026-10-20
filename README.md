@@ -77,6 +77,10 @@ uniplay/
 > [!NOTE]
 > Uniplay has completed its initial architectural scaffolding, core media decoder pipeline, and build system configuration. Both Debug and Release builds (with R8 code shrinking and optimization) compile successfully.
 
+> [!TIP]
+> **Continuing Development on Another Device?**
+> Check out the [Developer Guide & Implementation Blueprint](DEVELOPMENT.md) for upstream reference clone commands, architectural file mapping, and the step-by-step production roadmap.
+
 | Component | Status | Description |
 | :--- | :---: | :--- |
 | **Gradle Build Pipeline** | ✅ Ready | Builds cleanly with Gradle 8.13 and Android SDK 34. |
