@@ -22,10 +22,30 @@ object AapServiceDiscovery {
 
     fun buildResponse(width: Int = 1280, height: Int = 720, densityDpi: Int = 160): Control.ServiceDiscoveryResponse {
         val builder = Control.ServiceDiscoveryResponse.newBuilder()
+            .setMake("Uniplay")
+            .setModel("Uniplay Auto")
+            .setYear("2024")
+            .setVehicleId("uniplay-hub-01")
             .setHeadUnitMake("Uniplay")
             .setHeadUnitModel("AutoReceiver")
             .setHeadUnitSoftwareBuild("1.0.0")
             .setHeadUnitSoftwareVersion("1.0.0")
+            .setDriverPosition(Control.DriverPosition.DRIVER_POSITION_LEFT)
+            .setCanPlayNativeMediaDuringVr(false)
+            .setHideProjectedClock(false)
+            .setDisplayName("Uniplay Wireless")
+            .setHeadunitInfo(
+                Common.HeadUnitInfo.newBuilder()
+                    .setHeadUnitMake("Uniplay")
+                    .setHeadUnitModel("AutoReceiver")
+                    .setMake("Uniplay")
+                    .setModel("Uniplay Auto")
+                    .setYear("2024")
+                    .setVehicleId("uniplay-hub-01")
+                    .setHeadUnitSoftwareBuild("1.0.0")
+                    .setHeadUnitSoftwareVersion("1.0.0")
+                    .build()
+            )
 
         // 1. Video Service (Channel 1)
         val videoService = Control.Service.newBuilder().apply {
