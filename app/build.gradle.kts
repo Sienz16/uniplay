@@ -19,6 +19,9 @@ android {
 
     buildTypes {
         release {
+            // Signed with the debug key so the APK installs when sideloaded. Swap in a
+            // real keystore before any store release; updates only work with the same key.
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

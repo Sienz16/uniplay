@@ -1,6 +1,7 @@
 package com.uniplay.androidauto
 
 import android.content.Context
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
@@ -11,11 +12,14 @@ import com.andrerinas.openheadunit.aap.protocol.proto.*
 import com.andrerinas.openheadunit.connection.AccessoryConnection
 import com.andrerinas.openheadunit.ssl.SingleKeyKeyManager
 import com.uniplay.core.*
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Production-ready Android Auto protocol engine implementation.
@@ -60,7 +64,7 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         private const val OFFSET_MEDIA_INDICATION = 2
 
         /** How far into an access unit the SPS/PPS are looked for. */
-        private const val VIDEO_CONFIG_SCAN_LIMIT = 16 * 1024
+        private const val VIDEO_CONFIG_SCAN_LIMIT = 512
 
         /** How often the video throughput summary is logged. */
         private const val VIDEO_STATS_INTERVAL_MS = 5000L
@@ -78,8 +82,33 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
     private var sslContext: AapSslContext? = null
     private var isSslHandshakeComplete = false
     private val sessionIds = ConcurrentHashMap<Int, Int>()
-    private val videoReassemblyBuffer = java.io.ByteArrayOutputStream(256 * 1024)
-    private val inputExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val videoReassemblyBuffer = ExposedByteArrayOutputStream(256 * 1024)
+
+    /**
+     * Every byte the head unit sends goes through this one thread. Acks, touch and
+     * key events used to be written from the reader thread and an input thread at
+     * once; the TLS record was encrypted outside the write lock, so two senders could
+     * swap records on the wire and break the stream's MAC. It also meant a slow
+     * socket write stalled the reader, and with it video, audio and touch.
+     */
+    private val sendExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+            r.run()
+        }, "AapSendThread")
+    }
+
+    private val focusScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "AapFocusTimer").apply { isDaemon = true }
+    }
+
+    /** Latest touch MOVE not yet written; newer moves replace it instead of queueing. */
+    private val pendingMove = AtomicReference<Input.InputReport?>(null)
+
+    private class ExposedByteArrayOutputStream(size: Int) : ByteArrayOutputStream(size) {
+        val rawBuffer: ByteArray get() = buf
+        val length: Int get() = count
+    }
 
     /** True while a fragmented access unit is being assembled. */
     private var videoAssembling = false
@@ -114,23 +143,23 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         videoConfigSent = false
 
         workerThread = Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
             runAapLoop(transport, sink)
-        }, "AapEngineThread").apply {
-            priority = Thread.MAX_PRIORITY
-            start()
-        }
+        }, "AapEngineThread").apply { start() }
     }
 
     private fun runAapLoop(transport: TransportChannel, sink: MediaSink) {
         Log.i(TAG, "Starting Android Auto AAP session. Initializing handshake...")
         val conn = TransportAccessoryConnection(transport)
-        val input = transport.inputStream
         val output = transport.outputStream
-        val dataIn = DataInputStream(input)
 
         try {
             exchangeAapVersion(conn)
             performTlsHandshake(conn)
+
+            // Buffered only after the handshake, which reads the raw stream itself.
+            // Without it every 4-byte header and every payload is its own syscall.
+            val dataIn = DataInputStream(BufferedInputStream(transport.inputStream, 128 * 1024))
 
             // Reset socket timeout to non-blocking stream mode
             (transport as? SocketTransportChannel)?.socket?.soTimeout = 0
@@ -226,9 +255,7 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
             val decryptedPayload = if (isSslHandshakeComplete && (flags and 0x08 != 0)) {
                 val decrypted = sslContext?.decrypt(0, payload.size, payload)
                 if (decrypted != null) {
-                    val plain = ByteArray(decrypted.limit)
-                    System.arraycopy(decrypted.data, 0, plain, 0, decrypted.limit)
-                    plain
+                    decrypted.data.copyOf(decrypted.limit)
                 } else {
                     payload
                 }
@@ -315,7 +342,22 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
                 )
                 .build()
             sendAapProtoMessage(output, CHANNEL_SENSOR, Sensors.SensorsMsgType.SENSOR_EVENT_VALUE, sensorBatch)
+            sendNightMode(output)
         }
+    }
+
+    /**
+     * Tells the phone whether the head unit is in night mode so Android Auto picks the
+     * matching theme. Follows the system dark-mode setting of the head unit.
+     */
+    private fun sendNightMode(output: OutputStream) {
+        val uiMode = context?.resources?.configuration?.uiMode ?: return
+        val night = (uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        val batch = Sensors.SensorBatch.newBuilder()
+            .addNightMode(Sensors.SensorBatch.NightData.newBuilder().setIsNightMode(night))
+            .build()
+        sendAapProtoMessage(output, CHANNEL_SENSOR, Sensors.SensorsMsgType.SENSOR_EVENT_VALUE, batch)
     }
 
     private fun handleControlMessage(
@@ -448,7 +490,7 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
             Log.w(TAG, "Single video message has no start code (len=${payload.size}); dropping it")
             return false
         }
-        deliverVideoFrame(payload.copyOfRange(payloadOffset, payload.size), sink)
+        deliverVideoFrame(payload, payloadOffset, payload.size - payloadOffset, sink)
         return true
     }
 
@@ -482,9 +524,11 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         }
         videoReassemblyBuffer.write(payload, 0, payload.size)
         videoAssembling = false
-        val frame = videoReassemblyBuffer.toByteArray()
+        // The sink copies what it keeps, so the buffer can be handed over as it is.
+        if (videoReassemblyBuffer.length > 0) {
+            deliverVideoFrame(videoReassemblyBuffer.rawBuffer, 0, videoReassemblyBuffer.length, sink)
+        }
         videoReassemblyBuffer.reset()
-        if (frame.isNotEmpty()) deliverVideoFrame(frame, sink)
         return true
     }
 
@@ -498,12 +542,12 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
     }
 
     /** Hands a complete access unit to the decoder, parameter sets first. */
-    private fun deliverVideoFrame(frame: ByteArray, sink: MediaSink) {
-        sendVideoConfigIfFound(frame, sink)
-        sink.onVideoNal(frame, 0, frame.size, System.nanoTime() / 1000)
+    private fun deliverVideoFrame(frame: ByteArray, offset: Int, length: Int, sink: MediaSink) {
+        sendVideoConfigIfFound(frame, offset, length, sink)
+        sink.onVideoNal(frame, offset, length, System.nanoTime() / 1000)
 
         videoFramesReceived++
-        videoBytesReceived += frame.size
+        videoBytesReceived += length
         reportVideoStats()
     }
 
@@ -529,11 +573,11 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
      * sink so MediaCodec can be configured with csd-0/csd-1. Without this the
      * codec decodes nothing and the projection stays black.
      */
-    private fun sendVideoConfigIfFound(data: ByteArray, sink: MediaSink) {
-        // The parameter sets live in the first few hundred bytes of a keyframe, so a
-        // bounded scan is enough and keeps the per-frame cost off the transport.
-        val scanLength = minOf(data.size, VIDEO_CONFIG_SCAN_LIMIT)
-        val sets = H264ParameterSets.find(data, 0, scanLength) ?: return
+    private fun sendVideoConfigIfFound(data: ByteArray, offset: Int, length: Int, sink: MediaSink) {
+        // The parameter sets lead a keyframe, so a short scan finds them and keeps the
+        // per-frame cost of the (far more common) delta frames negligible.
+        val scanLength = minOf(length, VIDEO_CONFIG_SCAN_LIMIT)
+        val sets = H264ParameterSets.find(data, offset, scanLength) ?: return
 
         val previous = lastVideoSps
         if (videoConfigSent && previous != null && previous.contentEquals(sets.sps)) return
@@ -651,26 +695,21 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         type: Int,
         body: ByteArray
     ) {
+        val frame = buildAapFrame(channel, type, body)
         try {
-            val payloadLength = 2 + body.size
-            val frame = ByteArray(4 + payloadLength)
+            sendExecutor.execute { writeAapFrame(output, channel, type, frame) }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+        }
+    }
 
-            // Header (4B): [Channel(1B)][Flags(1B)][PayloadLen(2B)]
-            frame[0] = channel.toByte()
+    private fun buildAapFrame(channel: Int, type: Int, body: ByteArray): ByteArray =
+        AapFraming.build(channel, type, body)
 
-            val isControl = (type in 1..26)
-            val controlFlag = if (channel != CHANNEL_CONTROL && isControl) 0x04 else 0x00
-            val baseFlags = 0x03 or controlFlag // First & Last frame | control bit
-
-            frame[1] = baseFlags.toByte()
-            frame[2] = ((payloadLength shr 8) and 0xFF).toByte()
-            frame[3] = (payloadLength and 0xFF).toByte()
-
-            // Type (2B)
-            frame[4] = ((type shr 8) and 0xFF).toByte()
-            frame[5] = (type and 0xFF).toByte()
-
-            System.arraycopy(body, 0, frame, 6, body.size)
+    /** Runs on the send thread only, so encrypt-then-write is atomic per record. */
+    private fun writeAapFrame(output: OutputStream, channel: Int, type: Int, frame: ByteArray) {
+        try {
+            val payloadLength = frame.size - 4
+            val baseFlags = frame[1].toInt() and 0xFF
 
             val ssl = sslContext
             if (isSslHandshakeComplete && ssl != null) {
@@ -681,18 +720,14 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
                     encData[0] = channel.toByte()
                     encData[1] = (baseFlags or 0x08).toByte() // Mark encrypted
                     Utils.intToBytes(encrypted.limit - 4, 2, encData)
-                    synchronized(output) {
-                        output.write(encData, 0, encrypted.limit)
-                        output.flush()
-                    }
+                    output.write(encData, 0, encrypted.limit)
+                    output.flush()
                     return
                 }
             }
 
-            synchronized(output) {
-                output.write(frame, 0, frame.size)
-                output.flush()
-            }
+            output.write(frame, 0, frame.size)
+            output.flush()
         } catch (e: Exception) {
             Log.w(TAG, "Failed to send AAP message (channel=$channel, type=$type)", e)
         }
@@ -712,6 +747,7 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
             currentSink = null
             sessionIds.clear()
             videoReassemblyBuffer.reset()
+            pendingMove.set(null)
             videoConfigSent = false
             lastVideoSps = null
             videoAssembling = false
@@ -726,41 +762,47 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
     override fun sendTouchEvent(action: Int, x: Float, y: Float) {
         val transport = currentTransport ?: return
         if (!running.get() || !isSslHandshakeComplete) return
+        val pointerAction = pointerActionFor(action) ?: return
 
-        inputExecutor.execute {
-            try {
-                val pointerAction = pointerActionFor(action) ?: return@execute
+        val pointer = Input.TouchEvent.Pointer.newBuilder()
+            .setPointerId(0)
+            .setX(x.toInt())
+            .setY(y.toInt())
+            .build()
+        val touchEvent = Input.TouchEvent.newBuilder()
+            .setAction(pointerAction)
+            .setActionIndex(0)
+            .addPointerData(pointer)
+            .build()
+        // AAP input timestamps are uptime nanoseconds, not wall-clock time.
+        val timestampNs = SystemClock.elapsedRealtime() * 1_000_000L
+        val report = Input.InputReport.newBuilder()
+            .setTimestamp(timestampNs)
+            .setTouchEvent(touchEvent)
+            .build()
 
-                val pointer = Input.TouchEvent.Pointer.newBuilder()
-                    .setPointerId(0)
-                    .setX(x.toInt())
-                    .setY(y.toInt())
-                    .build()
-
-                val touchEvent = Input.TouchEvent.newBuilder()
-                    .setAction(pointerAction)
-                    .setActionIndex(0)
-                    .addPointerData(pointer)
-                    .build()
-
-                // AAP input timestamps are uptime nanoseconds, not wall-clock time.
-                val timestampNs = SystemClock.elapsedRealtime() * 1_000_000L
-                val inputReport = Input.InputReport.newBuilder()
-                    .setTimestamp(timestampNs)
-                    .setTouchEvent(touchEvent)
-                    .build()
-
-                if (pointerAction == Input.TouchEvent.PointerAction.TOUCH_ACTION_DOWN ||
-                    pointerAction == Input.TouchEvent.PointerAction.TOUCH_ACTION_UP
-                ) {
-                    Log.i(TAG, "AAP touch $pointerAction at (${x.toInt()}, ${y.toInt()}) ts=$timestampNs")
+        if (pointerAction == Input.TouchEvent.PointerAction.TOUCH_ACTION_MOVE) {
+            // A panel reports moves faster than the link needs them. Keep only the
+            // newest unsent one so a finger drag never builds a backlog of stale
+            // positions ahead of the UP that ends it.
+            if (pendingMove.getAndSet(report) == null) {
+                sendExecutor.execute {
+                    // Already on the send thread: write in place. Re-queueing here would
+                    // let a later UP slip in ahead of this move.
+                    pendingMove.getAndSet(null)?.let {
+                        val frame = buildAapFrame(CHANNEL_INPUT, Input.MsgType.EVENT_VALUE, it.toByteArray())
+                        writeAapFrame(transport.outputStream, CHANNEL_INPUT, Input.MsgType.EVENT_VALUE, frame)
+                    }
                 }
-
-                sendAapProtoMessage(transport.outputStream, CHANNEL_INPUT, Input.MsgType.EVENT_VALUE, inputReport)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to send AAP touch", e)
             }
+            return
         }
+
+        // DOWN / UP must not overtake a pending MOVE; flush it first, in order.
+        pendingMove.getAndSet(null)?.let {
+            sendAapProtoMessage(transport.outputStream, CHANNEL_INPUT, Input.MsgType.EVENT_VALUE, it)
+        }
+        sendAapProtoMessage(transport.outputStream, CHANNEL_INPUT, Input.MsgType.EVENT_VALUE, report)
     }
 
     private fun pointerActionFor(action: Int): Input.TouchEvent.PointerAction? = when (action) {
@@ -774,33 +816,43 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         else -> null
     }
 
+    /**
+     * Cycles video focus (native, then projected again), which makes the phone encode
+     * a new keyframe. This is how other head units recover from a lost frame.
+     */
+    override fun requestKeyframe() {
+        val transport = currentTransport ?: return
+        if (!running.get() || !isSslHandshakeComplete) return
+        val output = transport.outputStream
+
+        fun focus(mode: Media.VideoFocusMode) = Media.VideoFocusNotification.newBuilder()
+            .setMode(mode)
+            .setUnsolicited(true)
+            .build()
+
+        sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION_VALUE,
+            focus(Media.VideoFocusMode.VIDEO_FOCUS_NATIVE))
+        focusScheduler.schedule({
+            sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION_VALUE,
+                focus(Media.VideoFocusMode.VIDEO_FOCUS_PROJECTED))
+        }, 150, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
     override fun sendKeyEvent(keyCode: Int, isDown: Boolean) {
         val transport = currentTransport ?: return
         if (!running.get() || !isSslHandshakeComplete) return
 
-        inputExecutor.execute {
-            try {
-                val key = Input.Key.newBuilder()
-                    .setKeycode(keyCode)
-                    .setDown(isDown)
-                    .setLongpress(false)
-                    .setMetastate(0)
-                    .build()
-
-                val keyEvent = Input.KeyEvent.newBuilder()
-                    .addKeys(key)
-                    .build()
-
-                val inputReport = Input.InputReport.newBuilder()
-                    .setTimestamp(SystemClock.elapsedRealtime() * 1_000_000L)
-                    .setKeyEvent(keyEvent)
-                    .build()
-
-                sendAapProtoMessage(transport.outputStream, CHANNEL_INPUT, Input.MsgType.EVENT_VALUE, inputReport)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to send AAP key", e)
-            }
-        }
+        val key = Input.Key.newBuilder()
+            .setKeycode(keyCode)
+            .setDown(isDown)
+            .setLongpress(false)
+            .setMetastate(0)
+            .build()
+        val inputReport = Input.InputReport.newBuilder()
+            .setTimestamp(SystemClock.elapsedRealtime() * 1_000_000L)
+            .setKeyEvent(Input.KeyEvent.newBuilder().addKeys(key).build())
+            .build()
+        sendAapProtoMessage(transport.outputStream, CHANNEL_INPUT, Input.MsgType.EVENT_VALUE, inputReport)
     }
 
     /**

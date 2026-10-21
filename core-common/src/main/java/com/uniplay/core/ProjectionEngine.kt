@@ -23,4 +23,7 @@ interface ProjectionEngine {
 
     fun sendTouchEvent(action: Int, x: Float, y: Float)
     fun sendKeyEvent(keyCode: Int, isDown: Boolean)
+
+    /** Asks the phone for a fresh video keyframe. Engines that cannot do so ignore it. */
+    fun requestKeyframe() {}
 }

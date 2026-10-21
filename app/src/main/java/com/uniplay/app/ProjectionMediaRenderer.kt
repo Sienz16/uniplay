@@ -13,6 +13,10 @@ class ProjectionMediaRenderer(
         private const val TAG = "ProjectionMediaRenderer"
     }
 
+    /** Set by the session controller; asks the active engine for a video keyframe. */
+    @Volatile
+    var keyframeRequester: (() -> Unit)? = null
+
     @Volatile
     private var videoDecoder: ZeroCopyVideoDecoder? = null
     private var audioTrackMedia: LeanAudioTrack? = null
@@ -35,7 +39,8 @@ class ProjectionMediaRenderer(
             onCodecError = { error -> Log.e(TAG, "Decoder error encountered", error) },
             onFirstFrameRendered = { width, height ->
                 onFirstFrameRendered(width, height)
-            }
+            },
+            onNeedKeyframe = { keyframeRequester?.invoke() }
         )
         videoDecoder = decoder
 
@@ -78,30 +83,46 @@ class ProjectionMediaRenderer(
         decoder.feedNalUnit(nalUnit, offset, length, timestampUs)
     }
 
+    @Synchronized
     override fun onAudioData(channel: AudioChannel, pcmData: ByteArray, sampleRate: Int, channels: Int) {
         when (channel) {
             AudioChannel.MEDIA -> {
-                if (audioTrackMedia == null) {
-                    audioTrackMedia = LeanAudioTrack(AudioChannel.MEDIA, sampleRate, channels)
-                }
-                audioTrackMedia?.write(pcmData)
+                val track = audioTrackMedia.matching(channel, sampleRate, channels)
+                audioTrackMedia = track
+                track.write(pcmData)
             }
             AudioChannel.NAVIGATION, AudioChannel.SPEECH_SIRI_ASSISTANT -> {
-                if (audioTrackNav == null) {
-                    audioTrackNav = LeanAudioTrack(channel, sampleRate, channels)
-                }
-                audioTrackNav?.write(pcmData)
+                val track = audioTrackNav.matching(channel, sampleRate, channels)
+                audioTrackNav = track
+                track.write(pcmData)
             }
         }
     }
 
+    /** The existing track if it still fits the stream, otherwise a fresh one. */
+    private fun LeanAudioTrack?.matching(channel: AudioChannel, sampleRate: Int, channels: Int): LeanAudioTrack {
+        if (this != null && this.channel == channel && this.sampleRate == sampleRate && this.channelCount == channels) {
+            return this
+        }
+        this?.stop()
+        return LeanAudioTrack(channel, sampleRate, channels)
+    }
+
     override fun onSessionTerminated(reason: String) {
+        releaseAudio()
         onSessionEnded(reason)
+    }
+
+    @Synchronized
+    private fun releaseAudio() {
+        audioTrackMedia?.stop()
+        audioTrackNav?.stop()
+        audioTrackMedia = null
+        audioTrackNav = null
     }
 
     fun stop() {
         videoDecoder?.stop()
-        audioTrackMedia?.stop()
-        audioTrackNav?.stop()
+        releaseAudio()
     }
 }

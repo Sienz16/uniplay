@@ -78,6 +78,14 @@ class WirelessServer(
             activeSocketChannel = transport
             val bufferedInput = BufferedInputStream(socket.getInputStream())
             val detectedType = detectProjectionType(bufferedInput)
+            if (detectedType == ProjectionType.CARPLAY) {
+                // The CarPlay engine is not a working receiver yet. Accepting the
+                // session would leave the iPhone hanging on a black screen.
+                transport.close()
+                activeSocketChannel = null
+                onStatusUpdate("CarPlay is not supported yet. Use Android Auto.", false)
+                return
+            }
             val proxyTransport = createProxyTransport(socket, bufferedInput, transport)
 
             deviceRouter.onManualSelect(detectedType, proxyTransport, sink)

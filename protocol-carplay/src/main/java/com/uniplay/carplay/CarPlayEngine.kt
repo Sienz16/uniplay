@@ -10,6 +10,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Apple CarPlay protocol engine implementation.
  * Manages AirPlay/iAP2 transport framing and streams decrypted media to MediaSink.
+ *
+ * NOT a working receiver yet. The packet framing below is a placeholder, not real
+ * AirPlay or iAP2: a real session needs Apple's MFi authentication, an RTSP/AirPlay
+ * handshake and stream decryption, none of which exist here. The app refuses CarPlay
+ * connections up front (see WirelessServer and ProjectionSessionController).
  */
 class CarPlayEngine : ProjectionEngine {
 

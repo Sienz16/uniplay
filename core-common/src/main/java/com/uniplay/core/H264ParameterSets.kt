@@ -36,6 +36,28 @@ object H264ParameterSets {
         return 0
     }
 
+    /**
+     * Whether an access unit is a keyframe: an IDR slice (NAL 5) or the parameter sets
+     * that lead one (NAL 7) within its first [scanLimit] bytes. A decoder that lost
+     * frames can only restart cleanly from one of these.
+     */
+    fun isKeyframe(data: ByteArray, offset: Int, length: Int, scanLimit: Int = 256): Boolean {
+        val end = (offset + minOf(length, scanLimit)).coerceAtMost(data.size)
+        var i = offset
+        while (i + 3 < end) {
+            val sc = startCodeLength(data, i, end)
+            if (sc == 0) {
+                i++
+                continue
+            }
+            if (i + sc >= end) return false
+            val nalType = data[i + sc].toInt() and 0x1F
+            if (nalType == 5 || nalType == NAL_TYPE_SPS) return true
+            i += sc
+        }
+        return false
+    }
+
     /** Whether an access unit starts with a start code at [offset] and has payload behind it. */
     fun payloadStartsAt(data: ByteArray, offset: Int, end: Int): Boolean {
         val scLen = startCodeLength(data, offset, end)

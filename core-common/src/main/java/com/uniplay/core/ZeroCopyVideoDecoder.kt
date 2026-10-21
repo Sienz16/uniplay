@@ -2,6 +2,7 @@ package com.uniplay.core
 
 import android.media.MediaCodec
 import android.media.MediaFormat
+import android.os.Process
 import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
@@ -27,7 +28,9 @@ import java.util.concurrent.TimeUnit
 class ZeroCopyVideoDecoder(
     private val surface: Surface,
     private val onCodecError: (Exception) -> Unit = {},
-    private val onFirstFrameRendered: (Int, Int) -> Unit = { _, _ -> }
+    private val onFirstFrameRendered: (Int, Int) -> Unit = { _, _ -> },
+    /** Called when frames were lost and the picture needs a fresh keyframe to recover. */
+    private val onNeedKeyframe: () -> Unit = {}
 ) {
 
     companion object {
@@ -39,12 +42,19 @@ class ZeroCopyVideoDecoder(
         private const val DEFAULT_WIDTH = 1280
         private const val DEFAULT_HEIGHT = 720
         private const val MAX_INPUT_SIZE = 2 * 1024 * 1024
+        private const val OUTPUT_WAIT_US = 10_000L
+        private const val KEYFRAME_REQUEST_GAP_MS = 1000L
+
+        /** Decoded frames ready at once before the stale ones are skipped. */
+        private const val CATCHUP_DEPTH = 3
+        private const val MAX_READY = 8
     }
 
     private class Frame(val data: ByteArray, val timestampUs: Long)
 
+    @Volatile
     private var codec: MediaCodec? = null
-    private val bufferInfo = MediaCodec.BufferInfo()
+    private var outputThread: Thread? = null
 
     @Volatile
     private var running = false
@@ -60,7 +70,12 @@ class ZeroCopyVideoDecoder(
     @Volatile
     private var streamHeight = DEFAULT_HEIGHT
     private var configuredSps: ByteArray? = null
+    @Volatile
     private var hasRenderedFrame = false
+    /** True after frames were lost: inter frames are useless until the next keyframe. */
+    @Volatile
+    private var awaitingKeyframe = false
+    private var lastKeyframeRequestMs = 0L
     private var droppedFrames = 0L
     private var renderedFrames = 0L
 
@@ -109,22 +124,45 @@ class ZeroCopyVideoDecoder(
             }
         }
 
+        val keyframe = H264ParameterSets.isKeyframe(data, offset, length)
+        if (awaitingKeyframe) {
+            // Frames that reference a lost one only smear the picture; wait for a clean start.
+            if (!keyframe) {
+                droppedFrames++
+                return
+            }
+            awaitingKeyframe = false
+        }
+
         val copy = data.copyOfRange(offset, offset + length)
         if (!frameQueue.offer(Frame(copy, timestampUs))) {
-            // The decoder is behind. Drop the oldest frame so the picture stays live.
-            frameQueue.poll()
-            frameQueue.offer(Frame(copy, timestampUs))
+            // The decoder is behind. Dropping any single frame breaks every frame after it,
+            // so discard the backlog and resume at the next keyframe instead.
+            frameQueue.clear()
             droppedFrames++
+            if (keyframe) frameQueue.offer(Frame(copy, timestampUs)) else markFramesLost()
         }
+    }
+
+    private fun markFramesLost() {
+        awaitingKeyframe = true
+        frameQueue.clear()
+        val now = System.currentTimeMillis()
+        if (now - lastKeyframeRequestMs < KEYFRAME_REQUEST_GAP_MS) return
+        lastKeyframeRequestMs = now
+        Log.w(TAG, "Frames lost; asking the phone for a keyframe")
+        onNeedKeyframe()
     }
 
     @Synchronized
     private fun ensureFeedThread() {
         if (running && feedThread != null) return
         running = true
-        val thread = Thread({ feedLoop() }, "UniplayVideoDecoder")
+        val thread = Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
+            feedLoop()
+        }, "UniplayVideoDecoder")
         feedThread = thread
-        thread.priority = Thread.MAX_PRIORITY
         thread.start()
         Log.i(TAG, "Decoder thread started")
     }
@@ -189,6 +227,7 @@ class ZeroCopyVideoDecoder(
             configuredSps = sps
             isConfigured = true
             hasRenderedFrame = false
+            startOutputThread(newCodec)
             Log.i(TAG, "MediaCodec configured with SPS/PPS for ${streamWidth}x$streamHeight")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to configure MediaCodec with SPS/PPS", e)
@@ -203,39 +242,75 @@ class ZeroCopyVideoDecoder(
             val inputBufferIndex = decoder.dequeueInputBuffer(TIMEOUT_US)
             if (inputBufferIndex < 0) {
                 droppedFrames++
+                markFramesLost()
                 return
             }
             val inputBuffer = decoder.getInputBuffer(inputBufferIndex)
             if (inputBuffer == null) {
                 droppedFrames++
+                markFramesLost()
                 return
             }
             inputBuffer.clear()
             inputBuffer.put(frame.data, 0, frame.data.size)
             decoder.queueInputBuffer(inputBufferIndex, 0, frame.data.size, frame.timestampUs, 0)
-            drainOutput(decoder)
         } catch (e: Exception) {
             Log.e(TAG, "Error feeding frame to MediaCodec: ${e.message}")
         }
     }
 
-    private fun drainOutput(decoder: MediaCodec) {
+    /**
+     * Output has its own thread. Draining only after each input put a decoded frame
+     * behind the next one to arrive (a full frame interval of added latency, and
+     * uneven pacing); here a frame is shown the moment the codec has it.
+     */
+    private fun startOutputThread(owner: MediaCodec) {
+        val thread = Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
+            outputLoop(owner)
+        }, "UniplayVideoOutput")
+        outputThread = thread
+        thread.start()
+    }
+
+    private fun outputLoop(owner: MediaCodec) {
+        val info = MediaCodec.BufferInfo()
+        val ready = IntArray(MAX_READY)
         try {
-            while (true) {
-                val outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, 0)
-                when {
-                    outputBufferIndex >= 0 -> renderOutputBuffer(decoder, outputBufferIndex)
-                    outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> logOutputFormat(decoder)
-                    else -> return
+            while (running && codec === owner) {
+                val first = owner.dequeueOutputBuffer(info, OUTPUT_WAIT_US)
+                if (first == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    logOutputFormat(owner)
+                    continue
+                }
+                if (first < 0) continue
+
+                // Collect whatever else is already decoded. A burst after a quiet link
+                // would otherwise be replayed frame by frame in slow motion. Decoded
+                // frames are not references for later input, so skipping is free.
+                ready[0] = first
+                var count = 1
+                while (count < MAX_READY) {
+                    val next = owner.dequeueOutputBuffer(info, 0L)
+                    if (next >= 0) ready[count++] = next else break
+                }
+                val skipFrom = if (count >= CATCHUP_DEPTH) count - 1 else count
+                for (i in 0 until count) {
+                    renderOutputBuffer(owner, ready[i], render = i >= skipFrom || count < CATCHUP_DEPTH)
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Output buffer drain notice: ${e.message}")
+            // Thrown when the codec is stopped under this thread; that is the normal exit.
+            if (running && codec === owner) Log.w(TAG, "Output loop ended: ${e.message}")
         }
     }
 
-    private fun renderOutputBuffer(decoder: MediaCodec, bufferIndex: Int) {
-        decoder.releaseOutputBuffer(bufferIndex, true)
+    private fun renderOutputBuffer(decoder: MediaCodec, bufferIndex: Int, render: Boolean) {
+        decoder.releaseOutputBuffer(bufferIndex, render)
+        if (!render) {
+            droppedFrames++
+            return
+        }
         renderedFrames++
         if (hasRenderedFrame) return
 
@@ -255,15 +330,26 @@ class ZeroCopyVideoDecoder(
 
     @Synchronized
     private fun releaseCodec() {
-        try {
-            codec?.stop()
-        } catch (_: Exception) {
-        }
-        try {
-            codec?.release()
-        } catch (_: Exception) {
-        }
+        val old = codec
+        // Clearing the field first tells the output thread to leave before the codec
+        // is stopped underneath it.
         codec = null
+        val out = outputThread
+        outputThread = null
+        if (out != null && out !== Thread.currentThread()) {
+            try {
+                out.join(200)
+            } catch (_: InterruptedException) {
+            }
+        }
+        try {
+            old?.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            old?.release()
+        } catch (_: Exception) {
+        }
         configuredSps = null
         isConfigured = false
     }

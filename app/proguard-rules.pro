@@ -5,3 +5,4 @@
 -dontwarn javax.annotation.**
 -keep class com.andrerinas.openheadunit.aap.protocol.proto.** { *; }
 -keep class com.google.protobuf.** { *; }
+-keep class org.conscrypt.** { *; }

@@ -1,7 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Apple Devices (CarPlay) -->
+    <!-- Apple (CarPlay) -->
     <usb-device vendor-id="1452" />
-    <!-- Google Android Open Accessory (Android Auto) -->
-    <usb-device vendor-id="6353" />
+    <!-- Android phones; Google 6353 is also the accessory-mode ID after the AOA switch -->
+    <usb-device vendor-id="6353" /> <!-- Google -->
+    <usb-device vendor-id="1256" /> <!-- Samsung -->
+    <usb-device vendor-id="8888" /> <!-- Motorola -->
+    <usb-device vendor-id="4817" /> <!-- Huawei -->
+    <usb-device vendor-id="10007" /> <!-- Xiaomi -->
+    <usb-device vendor-id="8921" /> <!-- Oppo -->
+    <usb-device vendor-id="10864" /> <!-- OnePlus -->
+    <usb-device vendor-id="2996" /> <!-- HTC -->
+    <usb-device vendor-id="4046" /> <!-- Sony -->
+    <usb-device vendor-id="4100" /> <!-- LG -->
+    <usb-device vendor-id="6610" /> <!-- ZTE -->
+    <usb-device vendor-id="3725" /> <!-- MediaTek -->
+    <usb-device vendor-id="11669" /> <!-- Vivo -->
+    <usb-device vendor-id="1478" /> <!-- Qualcomm -->
+    <usb-device vendor-id="11022" /> <!-- Nothing/Realme -->
 </resources>

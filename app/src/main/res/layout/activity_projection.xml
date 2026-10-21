@@ -4,229 +4,311 @@
     android:layout_height="match_parent"
     android:background="#050811">
 
-    <!-- Zero-Copy Direct Rendering Surface -->
+    <!-- Hardware video surface; the idle screen below covers it until the first frame -->
     <SurfaceView
         android:id="@+id/projection_surface"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Wireless Connection Hub & First-Boot Guide Overlay -->
     <ScrollView
         android:id="@+id/guide_overlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:background="@drawable/bg_idle"
         android:fillViewport="true"
-        android:background="#E60A0E1A">
+        android:scrollbars="none">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center_horizontal"
-            android:padding="24dp">
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingLeft="48dp"
+            android:paddingRight="48dp"
+            android:paddingTop="32dp"
+            android:paddingBottom="32dp">
 
-            <!-- Title & Subtitle -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="UNIPLAY WIRELESS"
-                android:textColor="#FFFFFF"
-                android:textSize="26sp"
-                android:textStyle="bold"
-                android:letterSpacing="0.05" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Universal Dual Receiver for Apple CarPlay &amp; Android Auto"
-                android:textColor="#88A0C0"
-                android:textSize="13sp" />
-
-            <!-- Live Network & Device Badges -->
+            <!-- Left: state -->
             <LinearLayout
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="16dp">
+                android:layout_marginEnd="40dp"
+                android:layout_weight="4"
+                android:orientation="vertical">
 
                 <TextView
-                    android:id="@+id/badge_wifi_ip"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:background="#1E2A44"
-                    android:paddingHorizontal="14dp"
-                    android:paddingVertical="6dp"
-                    android:text="Wi-Fi IP: Detecting..."
-                    android:textColor="#4E9FFF"
-                    android:textSize="12sp"
-                    android:textStyle="bold" />
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.2"
+                    android:text="UNIPLAY"
+                    android:textColor="#6B7487"
+                    android:textSize="12sp" />
 
                 <TextView
-                    android:id="@+id/badge_bluetooth"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp"
-                    android:background="#1E2A44"
-                    android:paddingHorizontal="14dp"
-                    android:paddingVertical="6dp"
-                    android:text="Bluetooth: Uniplay-Wireless"
-                    android:textColor="#50E3C2"
-                    android:textSize="12sp"
-                    android:textStyle="bold" />
+                    android:layout_marginTop="20dp"
+                    android:fontFamily="sans-serif-light"
+                    android:lineSpacingMultiplier="0.95"
+                    android:text="Connect your\nphone"
+                    android:textColor="#F4F7FC"
+                    android:textSize="42sp" />
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <View
+                        android:id="@+id/status_dot"
+                        android:layout_width="8dp"
+                        android:layout_height="8dp"
+                        android:background="@drawable/bg_status_dot" />
+
+                    <TextView
+                        android:id="@+id/text_status"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:text="Waiting for your phone"
+                        android:textColor="#9AA3B5"
+                        android:textSize="14sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="28dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/badge_wifi_ip"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_chip"
+                        android:paddingLeft="14dp"
+            android:paddingRight="14dp"
+                        android:paddingTop="7dp"
+            android:paddingBottom="7dp"
+                        android:text="Wi-Fi"
+                        android:textColor="#C3CAD8"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/badge_bluetooth"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/bg_chip"
+                        android:paddingLeft="14dp"
+            android:paddingRight="14dp"
+                        android:paddingTop="7dp"
+            android:paddingBottom="7dp"
+                        android:text="Bluetooth"
+                        android:textColor="#C3CAD8"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/btn_hotspot_settings"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:fontFamily="sans-serif-medium"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp"
+                    android:text="Hotspot settings"
+                    android:textColor="#8FB2FF"
+                    android:textSize="13sp" />
             </LinearLayout>
 
-            <!-- Guide Cards Side-by-Side -->
+            <!-- Right: how to connect -->
             <LinearLayout
-                android:layout_width="match_parent"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="20dp"
-                android:gravity="center">
+                android:layout_weight="6"
+                android:orientation="vertical">
 
-                <!-- Apple CarPlay Guide Card -->
                 <LinearLayout
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginEnd="10dp"
-                    android:orientation="vertical"
-                    android:background="#141E33"
-                    android:padding="16dp">
+                    android:baselineAligned="false"
+                    android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="22dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="Android Auto"
+                    android:textColor="#F4F7FC"
+                    android:textSize="17sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:layout_marginBottom="18dp"
+                    android:text="Wireless"
+                    android:textColor="#6B7487"
+                    android:textSize="12sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="0dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
 
                     <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="🍏 Apple CarPlay (Wireless)"
-                        android:textColor="#FFFFFF"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:text="1. Connect iPhone to car's 5GHz Wi-Fi or Hotspot."
-                        android:textColor="#C0D0E8"
+                        android:layout_width="26dp"
+                        android:layout_height="26dp"
+                        android:background="@drawable/bg_step_number"
+                        android:fontFamily="sans-serif-medium"
+                        android:gravity="center"
+                        android:text="1"
+                        android:textColor="#8FB2FF"
                         android:textSize="12sp" />
 
                     <TextView
-                        android:layout_width="wrap_content"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="2. Ensure Bluetooth &amp; Wi-Fi are turned ON."
-                        android:textColor="#C0D0E8"
-                        android:textSize="12sp" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="3. On iPhone: Settings ➔ General ➔ CarPlay ➔ Select Uniplay."
-                        android:textColor="#C0D0E8"
-                        android:textSize="12sp" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="4. Screen will mirror automatically."
-                        android:textColor="#4E9FFF"
-                        android:textSize="11sp"
-                        android:textStyle="bold" />
+                        android:layout_marginStart="14dp"
+                        android:layout_weight="1"
+                        android:lineSpacingExtra="2dp"
+                        android:text="Pair the phone with this head unit over Bluetooth."
+                        android:textColor="#C3CAD8"
+                        android:textSize="14sp" />
                 </LinearLayout>
-
-                <!-- Android Auto Guide Card -->
                 <LinearLayout
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginStart="10dp"
-                    android:orientation="vertical"
-                    android:background="#141E33"
-                    android:padding="16dp">
+                    android:layout_marginTop="14dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
 
                     <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="🤖 Android Auto (Wireless)"
-                        android:textColor="#FFFFFF"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:text="1. Connect Android phone to car's Wi-Fi network."
-                        android:textColor="#C0D0E8"
+                        android:layout_width="26dp"
+                        android:layout_height="26dp"
+                        android:background="@drawable/bg_step_number"
+                        android:fontFamily="sans-serif-medium"
+                        android:gravity="center"
+                        android:text="2"
+                        android:textColor="#8FB2FF"
                         android:textSize="12sp" />
 
                     <TextView
-                        android:layout_width="wrap_content"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="2. Pair phone with car's Bluetooth."
-                        android:textColor="#C0D0E8"
+                        android:layout_marginStart="14dp"
+                        android:layout_weight="1"
+                        android:lineSpacingExtra="2dp"
+                        android:text="Join the head unit's Wi-Fi when your phone asks."
+                        android:textColor="#C3CAD8"
+                        android:textSize="14sp" />
+                </LinearLayout>
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="26dp"
+                        android:layout_height="26dp"
+                        android:background="@drawable/bg_step_number"
+                        android:fontFamily="sans-serif-medium"
+                        android:gravity="center"
+                        android:text="3"
+                        android:textColor="#8FB2FF"
                         android:textSize="12sp" />
 
                     <TextView
-                        android:layout_width="wrap_content"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="3. Open Android Auto app or accept connection prompt."
-                        android:textColor="#C0D0E8"
-                        android:textSize="12sp" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="4. High-speed AAP stream begins over Port 5000."
-                        android:textColor="#50E3C2"
-                        android:textSize="11sp"
-                        android:textStyle="bold" />
+                        android:layout_marginStart="14dp"
+                        android:layout_weight="1"
+                        android:lineSpacingExtra="2dp"
+                        android:text="Accept the Android Auto prompt on the phone."
+                        android:textColor="#C3CAD8"
+                        android:textSize="14sp" />
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- Bottom Live Connection Status -->
-            <TextView
-                android:id="@+id/text_status"
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="20dp"
-                android:text="Waiting for incoming phone connection on port 5000..."
-                android:textAlignment="center"
-                android:textColor="#00FF9D"
-                android:textSize="14sp"
-                android:textStyle="bold" />
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="22dp">
 
-            <!-- One-tap Connect to Phone Hotspot button -->
-            <Button
-                android:id="@+id/btn_connect_phone"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:backgroundTint="#2E5BFF"
-                android:paddingLeft="24dp"
-                android:paddingRight="24dp"
-                android:paddingTop="10dp"
-                android:paddingBottom="10dp"
-                android:text="⚡ Connect Directly to Phone Hotspot"
-                android:textAllCaps="false"
-                android:textColor="#FFFFFF"
-                android:textSize="14sp"
-                android:textStyle="bold" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="Apple CarPlay"
+                    android:textColor="#6B7487"
+                    android:textSize="17sp" />
 
-            <!-- Optimization tip -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="Tip: For smooth 60fps streaming without stutter, ensure head unit hotspot is on 5GHz band."
-                android:textColor="#556A88"
-                android:textSize="11sp" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:layout_marginBottom="18dp"
+                    android:text="Not available yet"
+                    android:textColor="#F0B46A"
+                    android:textSize="12sp" />
 
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:lineSpacingExtra="2dp"
+                    android:text="CarPlay support is still in development. Use Android Auto for now."
+                    android:textColor="#6B7487"
+                    android:textSize="14sp" />
+            </LinearLayout>
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btn_connect_phone"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="20dp"
+                    android:background="@drawable/bg_button_primary"
+                    android:fontFamily="sans-serif-medium"
+                    android:paddingLeft="26dp"
+            android:paddingRight="26dp"
+                    android:stateListAnimator="@null"
+                    android:text="Connect to phone hotspot"
+                    android:textAllCaps="false"
+                    android:textColor="#0B0E14"
+                    android:textSize="14sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="For the smoothest picture, use a 5 GHz hotspot."
+                    android:textColor="#6B7487"
+                    android:textSize="12sp" />
+            </LinearLayout>
         </LinearLayout>
     </ScrollView>
 

@@ -89,9 +89,9 @@ uniplay/
 | **LeanAudioTrack** | ✅ Ready | Low-overhead streaming audio pipeline for Media & Nav. |
 | **MemoryGuard** | ✅ Ready | Real-time RAM compaction and LMK mitigation daemon. |
 | **USB Device Routing Filter** | ✅ Ready | XML hardware filters configured for Apple & Google VIDs. |
-| **USB Transport Layer** | 🔄 In Progress | Bridging Android `UsbManager` bulk endpoints to `TransportChannel`. |
+| **USB Transport Layer** | 🧪 Untested | AOA 2.0 switch and bulk transport for Android Auto are written; needs hardware testing. |
 | **Google AOA 2.0 Handshake** | 🔄 In Progress | Porting accessory mode switching and AASDK SSL channel. |
-| **Apple AirPlay / iAP2 Seam** | 🔄 In Progress | Porting RTSP session negotiation and decryption seam. |
+| **Apple AirPlay / iAP2 Seam** | ⛔ Not working | Porting RTSP session negotiation and decryption seam. |
 | **Touch / Key Backpropagation**| 🔄 In Progress | Connecting touch events from `SurfaceView` back to phone. |
 
 ---
@@ -154,15 +154,15 @@ Uniplay stands on the shoulders of giants in the open-source automotive reverse-
    - Independent Apple CarPlay software receiver implementation for automotive displays.
    - Provided critical insights into AirPlay streaming, audio ringbuffer tuning, and head unit compatibility.
 
-3. **[OpenHeadUnit](https://github.com/andrerinas)** by **Andre Rinas**
-   - Open-source Android Auto head unit client implementation.
-   - Core research on Android Open Accessory (AOA) protocol handshakes and channel multiplexing.
+3. **[OpenHeadUnit](https://github.com/andreknieriem/open-headunit)** by **`andreknieriem`**
+   - Open-source Android Auto head unit client implementation (AGPL-3.0).
+   - Core research on Android Open Accessory (AOA) protocol handshakes and channel multiplexing. Uniplay's `com.andrerinas.openheadunit` package is derived from it.
 
-4. **Headunit for Android Auto** by **Michael A. Reid (`mikereidis`)**
+4. **[Headunit for Android Auto](https://github.com/mikereidis/headunit)** by **Michael A. Reid (`mikereidis`)**
    - Earliest open-source research and implementation of software-based Android Auto receivers (licensed under GNU AGPLv3).
 
-5. **AASDK Community**
-   - The open-source Android Auto Software Development Kit community for defining AAP framing and protobuf channel specifications.
+5. **[AASDK](https://github.com/f1xpl/aasdk)** by **`f1xpl`**
+   - Open-source C++ Android Auto SDK that defined much of the community's understanding of AAP framing and protobuf channel specifications.
 
 ---
 

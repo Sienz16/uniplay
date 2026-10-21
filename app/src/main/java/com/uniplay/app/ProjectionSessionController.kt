@@ -2,6 +2,8 @@ package com.uniplay.app
 
 import android.content.Context
 import android.graphics.Color
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
 import android.util.Log
 import com.uniplay.androidauto.AndroidAutoWirelessManager
 import com.uniplay.core.*
@@ -19,6 +21,12 @@ class ProjectionSessionController(
     }
 
     private val deviceRouter = DeviceRouter(context)
+
+    init {
+        (mediaSink as? ProjectionMediaRenderer)?.keyframeRequester = {
+            deviceRouter.getActiveEngine()?.requestKeyframe()
+        }
+    }
     private val bluetoothBeacon = BluetoothBeacon(context)
     private val isConnectingDirect = AtomicBoolean(false)
     private val isWirelessInitialized = AtomicBoolean(false)
@@ -33,26 +41,47 @@ class ProjectionSessionController(
 
         bluetoothBeacon.startAdvertising()
 
-        // Start official Android Auto Wireless RFCOMM Handshake Server
-        aaWirelessManager = AndroidAutoWirelessManager(context) { phoneName ->
-            onStatusUpdate(
-                "Bluetooth handshake with $phoneName! Handing off to Wi-Fi...",
-                Color.parseColor("#50E3C2")
-            )
-        }
-        aaWirelessManager?.start(
-            ssid = btName,
-            psk = "12345678",
-            localIp = localIp,
-            port = WirelessServer.PORT_MAIN
-        )
+        startAndroidAutoHandoff(localIp)
 
         // Initialize and start background high-speed wireless projection server
         wirelessServer = WirelessServer(deviceRouter, mediaSink) { status, isConnected ->
-            val color = if (isConnected) "#4E9FFF" else "#00FF9D"
+            val color = if (isConnected) "#8FB2FF" else "#5FD0A5"
             onStatusUpdate(status, Color.parseColor(color))
         }
         wirelessServer?.start()
+    }
+
+    val hotspot = HotspotSettings(context)
+
+    /**
+     * (Re)starts the Bluetooth handoff that tells the phone which Wi-Fi to join.
+     * Safe to call again after the user saves hotspot details or grants Bluetooth.
+     */
+    fun startAndroidAutoHandoff(localIp: String) {
+        aaWirelessManager?.stop()
+        aaWirelessManager = null
+
+        if (!hotspot.isConfigured) {
+            onStatusUpdate(
+                "Set your hotspot name and password to pair a phone wirelessly",
+                Color.parseColor("#F0B46A")
+            )
+            return
+        }
+
+        aaWirelessManager = AndroidAutoWirelessManager(context) { phoneName ->
+            onStatusUpdate(
+                "Bluetooth handshake with $phoneName! Handing off to Wi-Fi...",
+                Color.parseColor("#8FB2FF")
+            )
+        }.also {
+            it.start(
+                ssid = hotspot.ssid,
+                psk = hotspot.psk,
+                localIp = localIp,
+                port = WirelessServer.PORT_MAIN
+            )
+        }
     }
 
     fun connectDirectToPhone(manual: Boolean, gatewayIp: String, hasStreamStarted: Boolean) {
@@ -61,7 +90,7 @@ class ProjectionSessionController(
         if (manual) {
             onStatusUpdate(
                 "Attempting direct connection to phone at $gatewayIp...",
-                Color.parseColor("#4E9FFF")
+                Color.parseColor("#8FB2FF")
             )
         }
 
@@ -84,7 +113,7 @@ class ProjectionSessionController(
             if (connectedSocket != null) {
                 onStatusUpdate(
                     "Connected to Phone! Initializing Android Auto stream...",
-                    Color.parseColor("#00FF9D")
+                    Color.parseColor("#5FD0A5")
                 )
                 val transport = SocketTransportChannel(connectedSocket, TransportType.WIRELESS_WIFI)
                 deviceRouter.onManualSelect(ProjectionType.ANDROID_AUTO, transport, mediaSink)
@@ -93,11 +122,46 @@ class ProjectionSessionController(
                 if (manual) {
                     onStatusUpdate(
                         "Could not find Phone on $gatewayIp.\nEnsure 'Start head unit server' is ON in Android Auto settings.",
-                        Color.parseColor("#FF9F4E")
+                        Color.parseColor("#F0B46A")
                     )
                 }
             }
         }, "DirectPhoneConnector").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    /**
+     * A phone was plugged in. An iPhone is turned away (CarPlay is not available); any
+     * other device is switched into accessory mode, and once it re-attaches as an
+     * accessory its endpoints become the Android Auto transport. Caller must hold
+     * USB permission for [device].
+     */
+    fun onUsbDeviceAttached(device: UsbDevice) {
+        if (device.vendorId == DeviceRouter.VID_APPLE) {
+            onStatusUpdate("CarPlay is not supported yet. Use Android Auto.", Color.parseColor("#F0B46A"))
+            return
+        }
+        val usb = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        Thread({
+            try {
+                if (UsbAoa.isAccessoryMode(device)) {
+                    val transport = UsbAoa.openTransport(usb, device)
+                    if (transport == null) {
+                        onStatusUpdate("Could not open the USB connection to the phone", Color.parseColor("#F07C7C"))
+                        return@Thread
+                    }
+                    onStatusUpdate("Phone connected over USB. Starting Android Auto...", Color.parseColor("#5FD0A5"))
+                    deviceRouter.onUsbDeviceAttached(device, transport, mediaSink)
+                } else if (UsbAoa.requestAccessoryMode(usb, device)) {
+                    onStatusUpdate("Switching phone to Android Auto...", Color.parseColor("#8FB2FF"))
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "USB attach handling failed", e)
+                onStatusUpdate("USB error: ${e.message}", Color.parseColor("#F07C7C"))
+            }
+        }, "UsbAttachHandler").apply {
             isDaemon = true
             start()
         }
