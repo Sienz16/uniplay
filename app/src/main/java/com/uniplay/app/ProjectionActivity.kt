@@ -22,6 +22,7 @@ import android.app.AlertDialog
 import android.text.InputType
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.uniplay.core.*
@@ -37,6 +38,8 @@ class ProjectionActivity : Activity() {
     companion object {
         private const val TAG = "ProjectionActivity"
         private const val PERMISSION_REQ_CODE = 101
+        private const val VIDEO_WIDTH = 1280f
+        private const val VIDEO_HEIGHT = 720f
         private const val ACTION_USB_PERMISSION = "com.uniplay.app.USB_PERMISSION"
     }
 
@@ -69,6 +72,11 @@ class ProjectionActivity : Activity() {
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         surfaceView = findViewById(R.id.projection_surface)
+        // The phone draws a fixed 16:9 picture. Fit it inside the screen instead of
+        // stretching it, which turns circles into ovals on any other aspect ratio.
+        (surfaceView.parent as View).addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+            fitSurface(v.width, v.height)
+        }
         guideOverlay = findViewById(R.id.guide_overlay)
         badgeWifiIp = findViewById(R.id.badge_wifi_ip)
         badgeBluetooth = findViewById(R.id.badge_bluetooth)
@@ -162,6 +170,23 @@ class ProjectionActivity : Activity() {
             )
             usb.requestPermission(device, pending)
         }
+    }
+
+    private fun fitSurface(parentW: Int, parentH: Int) {
+        if (parentW <= 0 || parentH <= 0) return
+        val aspect = VIDEO_WIDTH / VIDEO_HEIGHT
+        var w = parentW
+        var h = (w / aspect).toInt()
+        if (h > parentH) {
+            h = parentH
+            w = (h * aspect).toInt()
+        }
+        val lp = surfaceView.layoutParams as FrameLayout.LayoutParams
+        if (lp.width == w && lp.height == h && lp.gravity == Gravity.CENTER) return
+        lp.width = w
+        lp.height = h
+        lp.gravity = Gravity.CENTER
+        surfaceView.layoutParams = lp
     }
 
     /** Slow breathing on the status dot: the screen is alive, not frozen. */
@@ -276,9 +301,11 @@ class ProjectionActivity : Activity() {
             event.actionMasked == MotionEvent.ACTION_POINTER_UP
         ) return true
 
-        // SurfaceView renders the 1280x720 AAP buffer stretched to its bounds.
-        val videoX = (event.x / viewW * 1280f).coerceIn(0f, 1279f)
-        val videoY = (event.y / viewH * 720f).coerceIn(0f, 719f)
+        // The picture may be letterboxed, so measure from the surface's own corner.
+        val origin = IntArray(2)
+        surfaceView.getLocationInWindow(origin)
+        val videoX = ((event.rawX - origin[0]) / viewW * VIDEO_WIDTH).coerceIn(0f, VIDEO_WIDTH - 1f)
+        val videoY = ((event.rawY - origin[1]) / viewH * VIDEO_HEIGHT).coerceIn(0f, VIDEO_HEIGHT - 1f)
 
         sessionController.sendTouchEvent(event.actionMasked, videoX, videoY)
         return true
