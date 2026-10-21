@@ -53,6 +53,16 @@ class VideoLayoutTest {
     }
 
     @Test
+    fun letterboxKeepsSixteenByNine() {
+        val (w, h) = VideoLayout.surfaceSize(1024, 768, VideoLayout.Margins(0, 0), letterbox = true)
+        assertEquals(1024, w)
+        assertEquals(576, h)
+        val (w2, h2) = VideoLayout.surfaceSize(1280, 480, VideoLayout.Margins(0, 0), letterbox = true)
+        assertEquals(853, w2)
+        assertEquals(480, h2)
+    }
+
+    @Test
     fun badScreenSizeGivesNoMargins() {
         assertEquals(VideoLayout.Margins(0, 0), VideoLayout.marginsFor(0, 0))
     }

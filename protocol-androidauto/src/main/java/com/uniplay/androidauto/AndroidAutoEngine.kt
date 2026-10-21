@@ -106,10 +106,6 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         }, "AapSendThread")
     }
 
-    private val focusScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
-        Thread(r, "AapFocusTimer").apply { isDaemon = true }
-    }
-
     /** Latest touch MOVE not yet written; newer moves replace it instead of queueing. */
     private val pendingMove = AtomicReference<Input.InputReport?>(null)
 
@@ -321,6 +317,10 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
 
             CHANNEL_INPUT -> {
                 handleInputMessage(msgType, output)
+            }
+
+            CHANNEL_SENSOR -> {
+                handleSensorMessage(msgType, output)
             }
         }
     }
@@ -747,6 +747,15 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
         }
     }
 
+    /** The phone asks to start each sensor it was offered and waits for the answer. */
+    private fun handleSensorMessage(msgType: Int, output: OutputStream) {
+        if (msgType != Sensors.SensorsMsgType.SENSOR_STARTREQUEST_VALUE) return
+        val response = Sensors.SensorResponse.newBuilder()
+            .setStatus(Common.MessageStatus.STATUS_SUCCESS)
+            .build()
+        sendAapProtoMessage(output, CHANNEL_SENSOR, Sensors.SensorsMsgType.SENSOR_STARTRESPONSE_VALUE, response)
+    }
+
     private fun handleInputMessage(msgType: Int, output: OutputStream) {
         if (msgType == Input.MsgType.BINDINGREQUEST_VALUE) {
             Log.i(TAG, "AAP Input Binding Request received. Responding success...")
@@ -896,25 +905,22 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
     }
 
     /**
-     * Cycles video focus (native, then projected again), which makes the phone encode
-     * a new keyframe. This is how other head units recover from a lost frame.
+     * Re-announces projected video focus, which makes the phone send a keyframe. This
+     * is only a nudge: releasing focus first (a "native" cycle) makes Android Auto
+     * think the user left projection, and under load it left the phone showing
+     * "Android Auto isn't responding".
      */
     override fun requestKeyframe() {
         val transport = currentTransport ?: return
         if (!running.get() || !isSslHandshakeComplete) return
-        val output = transport.outputStream
-
-        fun focus(mode: Media.VideoFocusMode) = Media.VideoFocusNotification.newBuilder()
-            .setMode(mode)
+        val focus = Media.VideoFocusNotification.newBuilder()
+            .setMode(Media.VideoFocusMode.VIDEO_FOCUS_PROJECTED)
             .setUnsolicited(true)
             .build()
-
-        sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION_VALUE,
-            focus(Media.VideoFocusMode.VIDEO_FOCUS_NATIVE))
-        focusScheduler.schedule({
-            sendAapProtoMessage(output, CHANNEL_VIDEO, Media.MsgType.MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION_VALUE,
-                focus(Media.VideoFocusMode.VIDEO_FOCUS_PROJECTED))
-        }, 150, java.util.concurrent.TimeUnit.MILLISECONDS)
+        sendAapProtoMessage(
+            transport.outputStream, CHANNEL_VIDEO,
+            Media.MsgType.MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION_VALUE, focus
+        )
     }
 
     override fun sendKeyEvent(keyCode: Int, isDown: Boolean) {

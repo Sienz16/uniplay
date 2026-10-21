@@ -109,6 +109,21 @@
                         android:textColor="#C3CAD8"
                         android:textSize="12sp" />
                 </LinearLayout>
+
+                <Button
+                    android:id="@+id/btn_display_mode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_marginTop="16dp"
+                    android:background="@drawable/bg_button_secondary"
+                    android:fontFamily="sans-serif-medium"
+                    android:paddingLeft="18dp"
+                    android:paddingRight="18dp"
+                    android:stateListAnimator="@null"
+                    android:text="Display: Fit screen"
+                    android:textAllCaps="false"
+                    android:textColor="#C3CAD8"
+                    android:textSize="13sp" />
             </LinearLayout>
 
             <!-- Right: how to connect, advancing as the phone connects -->

@@ -94,7 +94,18 @@ class ProjectionActivity : Activity() {
         stepTitles = listOf(R.id.step1_title, R.id.step2_title, R.id.step3_title).map { findViewById<TextView>(it) }
         setStage(1, animate = false)
         playEntrance()
-        listOf(btnConnectPhone, findViewById<View>(R.id.btn_hotspot_settings)).forEach(::addPressEffect)
+        val displayMode = findViewById<Button>(R.id.btn_display_mode)
+        fun showDisplayMode() {
+            displayMode.text = if (VideoLayout.isFitScreen(this)) "Display: Fit screen" else "Display: Wide 16:9"
+        }
+        showDisplayMode()
+        displayMode.setOnClickListener {
+            // Takes effect on the next connection, when the phone is told the shape again.
+            VideoLayout.setFitScreen(this, !VideoLayout.isFitScreen(this))
+            showDisplayMode()
+            (surfaceView.parent as View).let { fitSurface(it.width, it.height) }
+        }
+        listOf(btnConnectPhone, findViewById<View>(R.id.btn_hotspot_settings), displayMode).forEach(::addPressEffect)
 
         mediaRenderer = ProjectionMediaRenderer(
             onFirstFrameRendered = { width, height ->
@@ -192,7 +203,9 @@ class ProjectionActivity : Activity() {
      */
     private fun fitSurface(parentW: Int, parentH: Int) {
         if (parentW <= 0 || parentH <= 0) return
-        val (w, h) = VideoLayout.surfaceSize(parentW, parentH, VideoLayout.marginsFor(this))
+        val (w, h) = VideoLayout.surfaceSize(
+            parentW, parentH, VideoLayout.marginsFor(this), letterbox = !VideoLayout.isFitScreen(this)
+        )
         val lp = surfaceView.layoutParams as FrameLayout.LayoutParams
         if (lp.width == w && lp.height == h && lp.gravity == Gravity.CENTER) return
         lp.width = w

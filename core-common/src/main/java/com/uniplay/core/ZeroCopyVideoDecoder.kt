@@ -37,13 +37,18 @@ class ZeroCopyVideoDecoder(
         private const val TAG = "ZeroCopyDecoder"
         private const val MIME_TYPE_AVC = MediaFormat.MIMETYPE_VIDEO_AVC
         private const val TIMEOUT_US = 10_000L
-        private const val QUEUE_CAPACITY = 8
+        // About half a second at 60 fps. It must outlast a codec rebuild (new SPS after a
+        // layout change), or the keyframe that caused the rebuild is thrown away with it.
+        private const val QUEUE_CAPACITY = 32
         private const val POLL_MS = 50L
         private const val DEFAULT_WIDTH = 1280
         private const val DEFAULT_HEIGHT = 720
         private const val MAX_INPUT_SIZE = 2 * 1024 * 1024
         private const val OUTPUT_WAIT_US = 10_000L
-        private const val KEYFRAME_REQUEST_GAP_MS = 1000L
+        private const val KEYFRAME_REQUEST_GAP_MS = 3000L
+
+        /** Give up waiting for a keyframe after this long and decode whatever arrives. */
+        private const val KEYFRAME_WAIT_MS = 1200L
 
         /** Decoded frames ready at once before the stale ones are skipped. */
         private const val CATCHUP_DEPTH = 3
@@ -76,6 +81,7 @@ class ZeroCopyVideoDecoder(
     @Volatile
     private var awaitingKeyframe = false
     private var lastKeyframeRequestMs = 0L
+    private var awaitingSinceMs = 0L
     private var droppedFrames = 0L
     private var renderedFrames = 0L
 
@@ -126,8 +132,11 @@ class ZeroCopyVideoDecoder(
 
         val keyframe = H264ParameterSets.isKeyframe(data, offset, length)
         if (awaitingKeyframe) {
-            // Frames that reference a lost one only smear the picture; wait for a clean start.
-            if (!keyframe) {
+            // Frames that reference a lost one only smear the picture, so wait for a clean
+            // start, but never for long: a phone that sends keyframes rarely would
+            // otherwise leave the screen frozen, which looks exactly like a hang.
+            val waited = System.currentTimeMillis() - awaitingSinceMs
+            if (!keyframe && waited < KEYFRAME_WAIT_MS) {
                 droppedFrames++
                 return
             }
@@ -145,9 +154,10 @@ class ZeroCopyVideoDecoder(
     }
 
     private fun markFramesLost() {
+        val now = System.currentTimeMillis()
+        if (!awaitingKeyframe) awaitingSinceMs = now
         awaitingKeyframe = true
         frameQueue.clear()
-        val now = System.currentTimeMillis()
         if (now - lastKeyframeRequestMs < KEYFRAME_REQUEST_GAP_MS) return
         lastKeyframeRequestMs = now
         Log.w(TAG, "Frames lost; asking the phone for a keyframe")
