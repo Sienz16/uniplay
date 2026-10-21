@@ -38,8 +38,8 @@ class ProjectionActivity : Activity() {
     companion object {
         private const val TAG = "ProjectionActivity"
         private const val PERMISSION_REQ_CODE = 101
-        private const val VIDEO_WIDTH = 1280f
-        private const val VIDEO_HEIGHT = 720f
+        private const val VIDEO_WIDTH = VideoLayout.CANVAS_WIDTH.toFloat()
+        private const val VIDEO_HEIGHT = VideoLayout.CANVAS_HEIGHT.toFloat()
         private const val ACTION_USB_PERMISSION = "com.uniplay.app.USB_PERMISSION"
     }
 
@@ -57,6 +57,11 @@ class ProjectionActivity : Activity() {
     private lateinit var memoryGuard: MemoryGuard
 
     private var hasStreamStarted = false
+    private var permissionsPending = false
+    private var stage = 0
+    private lateinit var pulse: PulseView
+    private lateinit var stepBadges: List<TextView>
+    private lateinit var stepTitles: List<TextView>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,6 +89,12 @@ class ProjectionActivity : Activity() {
         statusDot = findViewById(R.id.status_dot)
         startDotPulse()
         btnConnectPhone = findViewById(R.id.btn_connect_phone)
+        pulse = findViewById(R.id.pulse)
+        stepBadges = listOf(R.id.step1_badge, R.id.step2_badge, R.id.step3_badge).map { findViewById<TextView>(it) }
+        stepTitles = listOf(R.id.step1_title, R.id.step2_title, R.id.step3_title).map { findViewById<TextView>(it) }
+        setStage(1, animate = false)
+        playEntrance()
+        listOf(btnConnectPhone, findViewById<View>(R.id.btn_hotspot_settings)).forEach(::addPressEffect)
 
         mediaRenderer = ProjectionMediaRenderer(
             onFirstFrameRendered = { width, height ->
@@ -99,7 +110,12 @@ class ProjectionActivity : Activity() {
             runOnUiThread {
                 statusText.text = status
                 statusDot.backgroundTintList = ColorStateList.valueOf(color)
+                setStage(stageFor(status))
             }
+        }
+        sessionController.onHotspotSetupNeeded = {
+            // While the permission dialog is up the handoff is retried when it closes.
+            runOnUiThread { if (!permissionsPending) showHotspotDialog() }
         }
 
         // Populate live network info into guide badges
@@ -111,11 +127,8 @@ class ProjectionActivity : Activity() {
         checkAndRequestPermissions()
         sessionController.startWirelessServices(localIp, btName)
         findViewById<View>(R.id.btn_hotspot_settings).setOnClickListener { showHotspotDialog() }
-        if (!sessionController.hotspot.isConfigured) showHotspotDialog()
 
-        // One-tap direct Hotspot connect button
-        val gatewayIp = NetworkUtils.getGatewayIp(this)
-        btnConnectPhone.text = "Connect to phone hotspot ($gatewayIp)"
+        // Manual fallback: connect straight to a phone that runs its own head unit server
         btnConnectPhone.setOnClickListener {
             val currentGatewayIp = NetworkUtils.getGatewayIp(this)
             sessionController.connectDirectToPhone(
@@ -172,21 +185,92 @@ class ProjectionActivity : Activity() {
         }
     }
 
+    /**
+     * Sizes the video so the part of the phone's canvas that holds its UI fills the
+     * screen exactly. The phone was told to leave the rest empty (see VideoLayout), so
+     * on any screen shape nothing is stretched, squashed or letterboxed.
+     */
     private fun fitSurface(parentW: Int, parentH: Int) {
         if (parentW <= 0 || parentH <= 0) return
-        val aspect = VIDEO_WIDTH / VIDEO_HEIGHT
-        var w = parentW
-        var h = (w / aspect).toInt()
-        if (h > parentH) {
-            h = parentH
-            w = (h * aspect).toInt()
-        }
+        val (w, h) = VideoLayout.surfaceSize(parentW, parentH, VideoLayout.marginsFor(this))
         val lp = surfaceView.layoutParams as FrameLayout.LayoutParams
         if (lp.width == w && lp.height == h && lp.gravity == Gravity.CENTER) return
         lp.width = w
         lp.height = h
         lp.gravity = Gravity.CENTER
         surfaceView.layoutParams = lp
+    }
+
+    /** Maps what the controller reports onto the three on-screen steps. */
+    private fun stageFor(status: String): Int = when {
+        status.contains("Bluetooth handshake", true) -> 2
+        status.contains("Connect", true) && !status.contains("Disconnected", true) ||
+            status.contains("Starting Android Auto", true) ||
+            status.contains("Switching", true) -> 3
+        else -> 1
+    }
+
+    /** Done steps get a tick, the current one lights up, later ones stay dim. */
+    private fun setStage(newStage: Int, animate: Boolean = true) {
+        val changed = newStage != stage
+        stage = newStage
+        stepBadges.forEachIndexed { i, badge ->
+            val step = i + 1
+            when {
+                step < stage -> {
+                    badge.setBackgroundResource(R.drawable.bg_step_done)
+                    badge.setTextColor(Color.parseColor("#5FD0A5"))
+                    badge.text = "✓"
+                }
+                step == stage -> {
+                    badge.setBackgroundResource(R.drawable.bg_step_active)
+                    badge.setTextColor(Color.parseColor("#0B0E14"))
+                    badge.text = step.toString()
+                }
+                else -> {
+                    badge.setBackgroundResource(R.drawable.bg_step_number)
+                    badge.setTextColor(Color.parseColor("#8FB2FF"))
+                    badge.text = step.toString()
+                }
+            }
+            stepTitles[i].alpha = if (step <= stage) 1f else 0.5f
+            if (animate && changed && step == stage) popIn(badge)
+        }
+        pulse.setBusy(stage >= 2)
+        pulse.setAccent(Color.parseColor(if (stage >= 3) "#5FD0A5" else "#8FB2FF"))
+    }
+
+    private fun popIn(view: View) {
+        view.scaleX = 0.6f
+        view.scaleY = 0.6f
+        view.animate().scaleX(1f).scaleY(1f).setDuration(280)
+            .setInterpolator(android.view.animation.OvershootInterpolator(2f)).start()
+    }
+
+    /** The panels slide up and fade in one after the other when the screen opens. */
+    private fun playEntrance() {
+        val offset = 24 * resources.displayMetrics.density
+        listOf(R.id.panel_state, R.id.card_steps).forEachIndexed { i, id ->
+            findViewById<View>(id).apply {
+                alpha = 0f
+                translationY = offset
+                animate().alpha(1f).translationY(0f).setStartDelay(120L * i + 100).setDuration(450)
+                    .setInterpolator(AccelerateDecelerateInterpolator()).start()
+            }
+        }
+    }
+
+    /** Buttons dip slightly while pressed. */
+    @Suppress("ClickableViewAccessibility")
+    private fun addPressEffect(view: View) {
+        view.setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> v.animate().scaleX(0.96f).scaleY(0.96f).setDuration(90).start()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+            }
+            false
+        }
     }
 
     /** Slow breathing on the status dot: the screen is alive, not frozen. */
@@ -201,27 +285,24 @@ class ProjectionActivity : Activity() {
     }
 
     private fun checkAndRequestPermissions() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val wanted = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val permissions = mutableListOf<String>()
-            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-            if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.BLUETOOTH_SCAN)
-            }
-            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
-            }
-
-            if (permissions.isNotEmpty()) {
-                requestPermissions(permissions.toTypedArray(), PERMISSION_REQ_CODE)
-            }
+            wanted += Manifest.permission.BLUETOOTH_CONNECT
+            wanted += Manifest.permission.BLUETOOTH_SCAN
+        }
+        if (Build.VERSION.SDK_INT >= 33) wanted += Manifest.permission.NEARBY_WIFI_DEVICES
+        val missing = wanted.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) {
+            permissionsPending = true
+            requestPermissions(missing.toTypedArray(), PERMISSION_REQ_CODE)
         }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSION_REQ_CODE) {
+            permissionsPending = false
             // Bluetooth just became usable, so the handoff can start for real now.
             sessionController.startAndroidAutoHandoff(NetworkUtils.getLocalIpAddress(this))
         }
@@ -249,9 +330,13 @@ class ProjectionActivity : Activity() {
         }
         AlertDialog.Builder(this)
             .setTitle("Head unit hotspot")
-            .setMessage("Enter the Wi-Fi hotspot this head unit is sharing. Your phone is told to join it over Bluetooth.")
+            .setMessage("Uniplay normally starts the car's hotspot by itself. If your head unit can't, enter the hotspot it shares here; the phone is told to join it over Bluetooth.")
             .setView(form)
             .setNegativeButton("Cancel", null)
+            .setNeutralButton("Automatic") { _, _ ->
+                sessionController.hotspot.save("", "")
+                sessionController.startAndroidAutoHandoff(NetworkUtils.getLocalIpAddress(this))
+            }
             .setPositiveButton("Save") { _, _ ->
                 sessionController.hotspot.save(ssid.text.toString(), psk.text.toString())
                 sessionController.startAndroidAutoHandoff(NetworkUtils.getLocalIpAddress(this))
@@ -279,6 +364,7 @@ class ProjectionActivity : Activity() {
             guideOverlay.visibility = View.VISIBLE
             if (dotPulse?.isRunning != true) startDotPulse()
             statusText.text = "Disconnected: $reason. Waiting for your phone"
+            setStage(1)
             statusDot.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#F07C7C"))
         }
     }

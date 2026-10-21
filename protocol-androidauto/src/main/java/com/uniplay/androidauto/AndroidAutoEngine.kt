@@ -1,6 +1,14 @@
 package com.uniplay.androidauto
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Bundle
+import android.os.Looper
+import androidx.core.content.ContextCompat
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
@@ -343,7 +351,70 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
                 .build()
             sendAapProtoMessage(output, CHANNEL_SENSOR, Sensors.SensorsMsgType.SENSOR_EVENT_VALUE, sensorBatch)
             sendNightMode(output)
+            startLocationUpdates()
         }
+    }
+
+    private var locationListener: LocationListener? = null
+
+    private fun hasLocationPermission(): Boolean = context != null &&
+        ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED
+
+    /** The GPS provider, or null when this head unit has no GPS receiver. */
+    private fun locationManager(): LocationManager? {
+        val lm = context?.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
+        return if (lm.allProviders.contains(LocationManager.GPS_PROVIDER)) lm else null
+    }
+
+    /**
+     * Forwards the head unit's own GPS to the phone, once a second. Only done when the
+     * sensor was announced; otherwise the phone keeps using its own GPS.
+     */
+    @SuppressLint("MissingPermission")
+    private fun startLocationUpdates() {
+        stopLocationUpdates()
+        if (!hasLocationPermission()) return
+        val lm = locationManager() ?: return
+        val output = currentTransport?.outputStream ?: return
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) = sendLocation(output, location)
+            @Deprecated("Deprecated in API 29")
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+            override fun onProviderEnabled(provider: String) {}
+            override fun onProviderDisabled(provider: String) {}
+        }
+        try {
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener, Looper.getMainLooper())
+            locationListener = listener
+            Log.i(TAG, "Forwarding head unit GPS to the phone")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not start GPS updates: ${e.message}")
+        }
+    }
+
+    private fun stopLocationUpdates() {
+        val listener = locationListener ?: return
+        locationListener = null
+        try {
+            locationManager()?.removeUpdates(listener)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun sendLocation(output: OutputStream, location: Location) {
+        if (!running.get() || !isSslHandshakeComplete) return
+        val data = Sensors.SensorBatch.LocationData.newBuilder()
+            .setTimestamp(location.time)
+            .setLatitude((location.latitude * 1E7).toInt())
+            .setLongitude((location.longitude * 1E7).toInt())
+            // accuracy is required by the protocol; assume 100 m when the fix gives none.
+            .setAccuracy(if (location.hasAccuracy()) (location.accuracy * 1E3).toInt() else 100_000)
+        if (location.hasAltitude()) data.altitude = (location.altitude * 1E2).toInt()
+        if (location.hasBearing()) data.bearing = (location.bearing * 1E6).toInt()
+        if (location.hasSpeed()) data.speed = (location.speed * 1E3).toInt()
+        val batch = Sensors.SensorBatch.newBuilder().addLocationData(data).build()
+        sendAapProtoMessage(output, CHANNEL_SENSOR, Sensors.SensorsMsgType.SENSOR_EVENT_VALUE, batch)
     }
 
     /**
@@ -377,7 +448,14 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
 
             Control.ControlMsgType.MESSAGE_SERVICE_DISCOVERY_REQUEST_VALUE -> {
                 Log.i(TAG, "AAP Service Discovery Request received. Delivering display & audio capabilities...")
-                val response = AapServiceDiscovery.buildResponse()
+                val margins = context?.let { VideoLayout.marginsFor(it) } ?: VideoLayout.Margins(0, 0)
+                val hasLocation = locationManager() != null && hasLocationPermission()
+                Log.i(TAG, "Display margins ${margins.width}x${margins.height}, head unit GPS=$hasLocation")
+                val response = AapServiceDiscovery.buildResponse(
+                    marginWidth = margins.width,
+                    marginHeight = margins.height,
+                    hasLocation = hasLocation
+                )
                 sendAapProtoMessage(output, CHANNEL_CONTROL, Control.ControlMsgType.MESSAGE_SERVICE_DISCOVERY_RESPONSE_VALUE, response)
             }
 
@@ -736,6 +814,7 @@ class AndroidAutoEngine(private val context: Context? = null) : ProjectionEngine
     override fun stop() {
         if (!running.getAndSet(false)) return
         Log.i(TAG, "Stopping Android Auto engine...")
+        stopLocationUpdates()
         try {
             workerThread?.interrupt()
             workerThread = null

@@ -24,41 +24,39 @@
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingLeft="48dp"
-            android:paddingRight="48dp"
             android:paddingTop="32dp"
+            android:paddingRight="48dp"
             android:paddingBottom="32dp">
 
-            <!-- Left: state -->
+            <!-- Left: live state -->
             <LinearLayout
+                android:id="@+id/panel_state"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_marginEnd="40dp"
                 android:layout_weight="4"
+                android:gravity="center_horizontal"
                 android:orientation="vertical">
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:fontFamily="sans-serif-medium"
-                    android:letterSpacing="0.2"
-                    android:text="UNIPLAY"
-                    android:textColor="#6B7487"
-                    android:textSize="12sp" />
+                <com.uniplay.app.PulseView
+                    android:id="@+id/pulse"
+                    android:layout_width="220dp"
+                    android:layout_height="220dp" />
 
                 <TextView
+                    android:id="@+id/text_headline"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="20dp"
+                    android:layout_marginTop="8dp"
                     android:fontFamily="sans-serif-light"
-                    android:lineSpacingMultiplier="0.95"
-                    android:text="Connect your\nphone"
+                    android:text="Connect your phone"
                     android:textColor="#F4F7FC"
-                    android:textSize="42sp" />
+                    android:textSize="30sp" />
 
                 <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="18dp"
+                    android:layout_marginTop="10dp"
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
@@ -81,7 +79,7 @@
                 <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="28dp"
+                    android:layout_marginTop="22dp"
                     android:orientation="horizontal">
 
                     <TextView
@@ -90,9 +88,9 @@
                         android:layout_height="wrap_content"
                         android:background="@drawable/bg_chip"
                         android:paddingLeft="14dp"
-            android:paddingRight="14dp"
                         android:paddingTop="7dp"
-            android:paddingBottom="7dp"
+                        android:paddingRight="14dp"
+                        android:paddingBottom="7dp"
                         android:text="Wi-Fi"
                         android:textColor="#C3CAD8"
                         android:textSize="12sp" />
@@ -104,31 +102,16 @@
                         android:layout_marginStart="8dp"
                         android:background="@drawable/bg_chip"
                         android:paddingLeft="14dp"
-            android:paddingRight="14dp"
                         android:paddingTop="7dp"
-            android:paddingBottom="7dp"
+                        android:paddingRight="14dp"
+                        android:paddingBottom="7dp"
                         android:text="Bluetooth"
                         android:textColor="#C3CAD8"
                         android:textSize="12sp" />
                 </LinearLayout>
-
-                <TextView
-                    android:id="@+id/btn_hotspot_settings"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:background="?android:attr/selectableItemBackground"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:fontFamily="sans-serif-medium"
-                    android:paddingTop="8dp"
-                    android:paddingBottom="8dp"
-                    android:text="Hotspot settings"
-                    android:textColor="#8FB2FF"
-                    android:textSize="13sp" />
             </LinearLayout>
 
-            <!-- Right: how to connect -->
+            <!-- Right: how to connect, advancing as the phone connects -->
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
@@ -136,176 +119,202 @@
                 android:orientation="vertical">
 
                 <LinearLayout
+                    android:id="@+id/card_steps"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:baselineAligned="false"
-                    android:orientation="horizontal">
+                    android:background="@drawable/bg_card"
+                    android:orientation="vertical"
+                    android:padding="28dp">
 
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginEnd="8dp"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="22dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-medium"
+                        android:letterSpacing="0.12"
+                        android:text="ANDROID AUTO  ·  WIRELESS"
+                        android:textColor="#6B7487"
+                        android:textSize="11sp" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:fontFamily="sans-serif-medium"
-                    android:text="Android Auto"
-                    android:textColor="#F4F7FC"
-                    android:textSize="17sp" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:layout_marginBottom="18dp"
-                    android:text="Wireless"
-                    android:textColor="#6B7487"
-                    android:textSize="12sp" />
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="22dp"
+                        android:orientation="vertical">
 
                 <LinearLayout
+                    android:id="@+id/step1"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="0dp"
-                    android:gravity="center_vertical"
                     android:orientation="horizontal">
 
                     <TextView
-                        android:layout_width="26dp"
-                        android:layout_height="26dp"
+                        android:id="@+id/step1_badge"
+                        android:layout_width="30dp"
+                        android:layout_height="30dp"
                         android:background="@drawable/bg_step_number"
                         android:fontFamily="sans-serif-medium"
                         android:gravity="center"
                         android:text="1"
                         android:textColor="#8FB2FF"
-                        android:textSize="12sp" />
+                        android:textSize="13sp" />
 
-                    <TextView
+                    <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="14dp"
+                        android:layout_marginStart="16dp"
                         android:layout_weight="1"
-                        android:lineSpacingExtra="2dp"
-                        android:text="Pair the phone with this head unit over Bluetooth."
-                        android:textColor="#C3CAD8"
-                        android:textSize="14sp" />
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:id="@+id/step1_title"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="sans-serif-medium"
+                            android:text="Pair over Bluetooth"
+                            android:textColor="#F4F7FC"
+                            android:textSize="16sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="Pair your phone with this head unit, once."
+                            android:textColor="#8A93A6"
+                            android:textSize="13sp" />
+                    </LinearLayout>
                 </LinearLayout>
                 <LinearLayout
+                    android:id="@+id/step2"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:gravity="center_vertical"
+                    android:layout_marginTop="18dp"
                     android:orientation="horizontal">
 
                     <TextView
-                        android:layout_width="26dp"
-                        android:layout_height="26dp"
+                        android:id="@+id/step2_badge"
+                        android:layout_width="30dp"
+                        android:layout_height="30dp"
                         android:background="@drawable/bg_step_number"
                         android:fontFamily="sans-serif-medium"
                         android:gravity="center"
                         android:text="2"
                         android:textColor="#8FB2FF"
-                        android:textSize="12sp" />
+                        android:textSize="13sp" />
 
-                    <TextView
+                    <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="14dp"
+                        android:layout_marginStart="16dp"
                         android:layout_weight="1"
-                        android:lineSpacingExtra="2dp"
-                        android:text="Join the head unit's Wi-Fi when your phone asks."
-                        android:textColor="#C3CAD8"
-                        android:textSize="14sp" />
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:id="@+id/step2_title"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="sans-serif-medium"
+                            android:text="Join the car's Wi-Fi"
+                            android:textColor="#F4F7FC"
+                            android:textSize="16sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="Your phone is told which network to join, automatically."
+                            android:textColor="#8A93A6"
+                            android:textSize="13sp" />
+                    </LinearLayout>
                 </LinearLayout>
                 <LinearLayout
+                    android:id="@+id/step3"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:gravity="center_vertical"
+                    android:layout_marginTop="18dp"
                     android:orientation="horizontal">
 
                     <TextView
-                        android:layout_width="26dp"
-                        android:layout_height="26dp"
+                        android:id="@+id/step3_badge"
+                        android:layout_width="30dp"
+                        android:layout_height="30dp"
                         android:background="@drawable/bg_step_number"
                         android:fontFamily="sans-serif-medium"
                         android:gravity="center"
                         android:text="3"
                         android:textColor="#8FB2FF"
-                        android:textSize="12sp" />
+                        android:textSize="13sp" />
 
-                    <TextView
+                    <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="14dp"
+                        android:layout_marginStart="16dp"
                         android:layout_weight="1"
-                        android:lineSpacingExtra="2dp"
-                        android:text="Accept the Android Auto prompt on the phone."
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:id="@+id/step3_title"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="sans-serif-medium"
+                            android:text="Accept on your phone"
+                            android:textColor="#F4F7FC"
+                            android:textSize="16sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="Tap Allow on the Android Auto prompt."
+                            android:textColor="#8A93A6"
+                            android:textSize="13sp" />
+                    </LinearLayout>
+                </LinearLayout>
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btn_connect_phone"
+                        android:layout_width="wrap_content"
+                        android:layout_height="46dp"
+                        android:background="@drawable/bg_button_primary"
+                        android:fontFamily="sans-serif-medium"
+                        android:paddingLeft="24dp"
+                        android:paddingRight="24dp"
+                        android:stateListAnimator="@null"
+                        android:text="Connect manually"
+                        android:textAllCaps="false"
+                        android:textColor="#0B0E14"
+                        android:textSize="14sp" />
+
+                    <Button
+                        android:id="@+id/btn_hotspot_settings"
+                        android:layout_width="wrap_content"
+                        android:layout_height="46dp"
+                        android:layout_marginStart="10dp"
+                        android:background="@drawable/bg_button_secondary"
+                        android:fontFamily="sans-serif-medium"
+                        android:paddingLeft="22dp"
+                        android:paddingRight="22dp"
+                        android:stateListAnimator="@null"
+                        android:text="Hotspot settings"
+                        android:textAllCaps="false"
                         android:textColor="#C3CAD8"
                         android:textSize="14sp" />
                 </LinearLayout>
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginStart="8dp"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="22dp">
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:fontFamily="sans-serif-medium"
-                    android:text="Apple CarPlay"
-                    android:textColor="#6B7487"
-                    android:textSize="17sp" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:layout_marginBottom="18dp"
-                    android:text="Not available yet"
-                    android:textColor="#F0B46A"
-                    android:textSize="12sp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:lineSpacingExtra="2dp"
-                    android:text="CarPlay support is still in development. Use Android Auto for now."
-                    android:textColor="#6B7487"
-                    android:textSize="14sp" />
-            </LinearLayout>
-                </LinearLayout>
-
-                <Button
-                    android:id="@+id/btn_connect_phone"
-                    android:layout_width="wrap_content"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="20dp"
-                    android:background="@drawable/bg_button_primary"
-                    android:fontFamily="sans-serif-medium"
-                    android:paddingLeft="26dp"
-            android:paddingRight="26dp"
-                    android:stateListAnimator="@null"
-                    android:text="Connect to phone hotspot"
-                    android:textAllCaps="false"
-                    android:textColor="#0B0E14"
-                    android:textSize="14sp" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:text="For the smoothest picture, use a 5 GHz hotspot."
+                    android:layout_marginTop="14dp"
+                    android:text="Manual connect needs Developer mode and Start head unit server on the phone.  CarPlay is not supported yet; try DiPlay."
                     android:textColor="#6B7487"
                     android:textSize="12sp" />
             </LinearLayout>

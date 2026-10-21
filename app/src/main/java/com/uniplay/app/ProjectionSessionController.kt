@@ -53,35 +53,50 @@ class ProjectionSessionController(
 
     val hotspot = HotspotSettings(context)
 
+    /** Set by the UI: asks the user for hotspot details when none could be found automatically. */
+    var onHotspotSetupNeeded: () -> Unit = {}
+
+    private val localHotspot = LocalHotspot(context)
+
     /**
      * (Re)starts the Bluetooth handoff that tells the phone which Wi-Fi to join.
-     * Safe to call again after the user saves hotspot details or grants Bluetooth.
+     * Typed-in hotspot details win; otherwise the app starts a hotspot of its own and
+     * uses that, and only asks the user when this head unit cannot do so.
+     * Safe to call again after the user saves details or grants a permission.
      */
     fun startAndroidAutoHandoff(localIp: String) {
         aaWirelessManager?.stop()
         aaWirelessManager = null
 
-        if (!hotspot.isConfigured) {
-            onStatusUpdate(
-                "Set your hotspot name and password to pair a phone wirelessly",
-                Color.parseColor("#F0B46A")
-            )
+        if (hotspot.isConfigured) {
+            beginHandoff(hotspot.ssid, hotspot.psk, localIp)
             return
         }
 
+        onStatusUpdate("Starting the car hotspot...", Color.parseColor("#8FB2FF"))
+        localHotspot.start(
+            onReady = { creds ->
+                beginHandoff(creds.ssid, creds.psk, creds.ip)
+            },
+            onFailed = { reason ->
+                Log.w(TAG, "Automatic hotspot unavailable: $reason")
+                onStatusUpdate("$reason. Enter your hotspot details instead.", Color.parseColor("#F0B46A"))
+                onHotspotSetupNeeded()
+            }
+        )
+    }
+
+    private fun beginHandoff(ssid: String, psk: String, ip: String) {
+        aaWirelessManager?.stop()
         aaWirelessManager = AndroidAutoWirelessManager(context) { phoneName ->
             onStatusUpdate(
                 "Bluetooth handshake with $phoneName! Handing off to Wi-Fi...",
                 Color.parseColor("#8FB2FF")
             )
         }.also {
-            it.start(
-                ssid = hotspot.ssid,
-                psk = hotspot.psk,
-                localIp = localIp,
-                port = WirelessServer.PORT_MAIN
-            )
+            it.start(ssid = ssid, psk = psk, localIp = ip, port = WirelessServer.PORT_MAIN)
         }
+        onStatusUpdate("Ready. Waiting for your phone", Color.parseColor("#5FD0A5"))
     }
 
     fun connectDirectToPhone(manual: Boolean, gatewayIp: String, hasStreamStarted: Boolean) {
@@ -180,6 +195,7 @@ class ProjectionSessionController(
     }
 
     fun stop() {
+        localHotspot.stop()
         aaWirelessManager?.stop()
         wirelessServer?.stop()
         bluetoothBeacon.stopAdvertising()

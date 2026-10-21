@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.png" width="120" alt="Uniplay logo"></p>
+
 # Uniplay: Universal Dual Receiver (CarPlay & Android Auto)
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)

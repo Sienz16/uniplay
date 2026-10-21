@@ -50,7 +50,14 @@ object AapServiceDiscovery {
         KeyEvent.KEYCODE_MEDIA_STOP
     )
 
-    fun buildResponse(width: Int = 1280, height: Int = 720, densityDpi: Int = 160): Control.ServiceDiscoveryResponse {
+    fun buildResponse(
+        width: Int = 1280,
+        height: Int = 720,
+        densityDpi: Int = 160,
+        marginWidth: Int = 0,
+        marginHeight: Int = 0,
+        hasLocation: Boolean = false
+    ): Control.ServiceDiscoveryResponse {
         val builder = Control.ServiceDiscoveryResponse.newBuilder()
             .setMake("Uniplay")
             .setModel("Uniplay Auto")
@@ -91,6 +98,13 @@ object AapServiceDiscovery {
                         .setType(Sensors.SensorType.NIGHT)
                         .build()
                 )
+                if (hasLocation) {
+                    addSensors(
+                        Control.Service.SensorSourceService.Sensor.newBuilder()
+                            .setType(Sensors.SensorType.LOCATION)
+                            .build()
+                    )
+                }
             }.build()
         }.build()
         builder.addServices(sensorService)
@@ -108,8 +122,8 @@ object AapServiceDiscovery {
                         frameRate = Control.Service.MediaSinkService.VideoConfiguration.VideoFrameRateType._60
                         setDensity(densityDpi)
                         setPixelAspectRatioE4(10000)
-                        setMarginWidth(0)
-                        setMarginHeight(0)
+                        setMarginWidth(marginWidth)
+                        setMarginHeight(marginHeight)
                         setVideoCodecType(Media.MediaCodecType.MEDIA_CODEC_VIDEO_H264_BP)
                     }.build()
                 )
