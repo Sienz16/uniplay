@@ -314,7 +314,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="14dp"
-                    android:text="Manual connect needs Developer mode and Start head unit server on the phone.  CarPlay is not supported yet; try DiPlay."
+                    android:text="Manual connect needs Developer mode and Start head unit server on the phone.  CarPlay is not supported yet."
                     android:textColor="#6B7487"
                     android:textSize="12sp" />
             </LinearLayout>

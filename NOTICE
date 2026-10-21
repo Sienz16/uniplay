@@ -1,0 +1,35 @@
+Uniplay
+Copyright (C) 2026 Uniplay Contributors
+
+Uniplay is licensed under the GNU Affero General Public License, version 3 or
+(at your option) any later version. See LICENSE.
+
+It includes and builds on the following third-party work. Their copyright and
+licence notices must be kept when this software is copied or modified.
+
+1. OpenHeadUnit  --  https://github.com/andreknieriem/open-headunit
+   Licence: GNU AGPL-3.0.
+   Used in protocol-androidauto/src/main/java/com/andrerinas/openheadunit/ :
+   the Android Auto protocol message definitions (aap/protocol/proto), the AAP
+   TLS handshake helpers (aap/AapSsl*.kt, ssl/*), byte-buffer and message
+   helpers, and the head-unit certificate and key in
+   protocol-androidauto/src/main/res/raw/ and app/src/main/res/raw/.
+   Some files are modified. The original files are not Uniplay's own work.
+
+2. Headunit for Android Auto  --  https://github.com/mikereidis/headunit
+   Copyright 2011-2015 Michael A. Reid. Licence: GNU AGPL-3.0.
+   OpenHeadUnit is derived from this project, so it carries through to the
+   code above. See COPYRIGHT_MICHAEL_REID_GPLv3AFFERO.txt.
+
+3. Libraries pulled in by Gradle (not copied into this repository), each under
+   its own licence: Protocol Buffers (BSD-3-Clause), Conscrypt (Apache-2.0),
+   AndroidX and Kotlin (Apache-2.0).
+
+Studied for reference only; no code from them is included:
+   - AASDK  https://github.com/f1xpl/aasdk
+   - DiAuto https://github.com/shihabal3amri/DiAuto
+   - DiPlay https://github.com/shihabal3amri/DiPlay
+
+Trademarks: Android, Android Auto and Google are trademarks of Google LLC.
+Apple, CarPlay, AirPlay and iPhone are trademarks of Apple Inc. Uniplay is not
+affiliated with, sponsored by or endorsed by either company.

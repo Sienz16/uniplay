@@ -2,7 +2,7 @@
 
 # Uniplay: Universal Dual Receiver (CarPlay & Android Auto)
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Android Min SDK](https://img.shields.io/badge/Min%20SDK-21%20(Lollipop)-green.svg)](https://developer.android.com)
 [![Android Target SDK](https://img.shields.io/badge/Target%20SDK-34%20(Android%2014)-brightgreen.svg)](https://developer.android.com)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.0.21-purple.svg)](https://kotlinlang.org)
@@ -79,10 +79,6 @@ uniplay/
 > [!NOTE]
 > Uniplay has completed its initial architectural scaffolding, core media decoder pipeline, and build system configuration. Both Debug and Release builds (with R8 code shrinking and optimization) compile successfully.
 
-> [!TIP]
-> **Continuing Development on Another Device?**
-> Check out the [Developer Guide & Implementation Blueprint](DEVELOPMENT.md) for upstream reference clone commands, architectural file mapping, and the step-by-step production roadmap.
-
 | Component | Status | Description |
 | :--- | :---: | :--- |
 | **Gradle Build Pipeline** | ✅ Ready | Builds cleanly with Gradle 8.13 and Android SDK 34. |
@@ -146,47 +142,27 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## 🤝 Third-Party Credits & Acknowledgments
 
-Uniplay stands on the shoulders of giants in the open-source automotive reverse-engineering and software receiver community. We gratefully acknowledge and credit the following foundational projects and researchers:
+Uniplay's Android Auto protocol layer is built on open-source work. See [NOTICE](NOTICE) for exactly which files come from where.
 
-1. **[DiAuto](https://github.com/shihabal3amri/DiAuto)** by **Shihab Al-Amri (`shihabal3amri`)**
-   - Pioneering Android Auto implementation for automotive Android head units (BYD DiLink).
-   - Provided foundational architecture for USB accessory handling, Wi-Fi Direct p2p discovery, and frame pacing.
+**Code included in this repository**
 
-2. **[DiPlay](https://github.com/shihabal3amri/DiPlay)** by **Shihab Al-Amri (`shihabal3amri`)**
-   - Independent Apple CarPlay software receiver implementation for automotive displays.
-   - Provided critical insights into AirPlay streaming, audio ringbuffer tuning, and head unit compatibility.
+1. **[OpenHeadUnit](https://github.com/andreknieriem/open-headunit)** by `andreknieriem` (AGPL-3.0)
+   - Android Auto protocol definitions, the TLS handshake helpers and the head-unit certificate and key used for the AAP handshake. Some files are modified.
 
-3. **[OpenHeadUnit](https://github.com/andreknieriem/open-headunit)** by **`andreknieriem`**
-   - Open-source Android Auto head unit client implementation (AGPL-3.0).
-   - Core research on Android Open Accessory (AOA) protocol handshakes and channel multiplexing. Uniplay's `com.andrerinas.openheadunit` package is derived from it.
+2. **[Headunit for Android Auto](https://github.com/mikereidis/headunit)** by **Michael A. Reid** (`mikereidis`, AGPL-3.0)
+   - The original open-source software Android Auto head unit that OpenHeadUnit is derived from. See [COPYRIGHT_MICHAEL_REID_GPLv3AFFERO.txt](COPYRIGHT_MICHAEL_REID_GPLv3AFFERO.txt).
 
-4. **[Headunit for Android Auto](https://github.com/mikereidis/headunit)** by **Michael A. Reid (`mikereidis`)**
-   - Earliest open-source research and implementation of software-based Android Auto receivers (licensed under GNU AGPLv3).
+**Studied for reference only (no code included)**
 
-5. **[AASDK](https://github.com/f1xpl/aasdk)** by **`f1xpl`**
-   - Open-source C++ Android Auto SDK that defined much of the community's understanding of AAP framing and protobuf channel specifications.
+- **[AASDK](https://github.com/f1xpl/aasdk)** by `f1xpl`: open-source Android Auto SDK that documents AAP framing and channels.
+- **[DiAuto](https://github.com/shihabal3amri/DiAuto)** and **[DiPlay](https://github.com/shihabal3amri/DiPlay)** by `shihabal3amri`: Android Auto and CarPlay receivers for BYD head units.
 
 ---
 
 ## ⚖️ License & Legal Disclaimers
 
 ### License
-This project is licensed under the **GNU General Public License v3.0 (GPLv3)** in compliance with upstream copyleft obligations from derived open-source research. See the [LICENSE](LICENSE) file for the complete license text.
-
-```
-Uniplay: Universal Dual Receiver (CarPlay & Android Auto)
-Copyright (C) 2026 Uniplay Contributors
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-GNU General Public License for more details.
-```
+Uniplay is licensed under the **GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)**, because it includes AGPL-licensed code from the projects credited above. See [LICENSE](LICENSE) for the full text and [NOTICE](NOTICE) for third-party details. If you distribute a modified version, you must also make its source available under the same licence.
 
 ### Trademark Disclaimers
 * **Apple CarPlay®**, **AirPlay®**, **iAP2®**, **MFi®**, and **iPhone®** are registered trademarks of **Apple Inc.**, registered in the U.S. and other countries and regions.
