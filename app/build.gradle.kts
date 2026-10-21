@@ -34,6 +34,12 @@ android {
         }
     }
 
+    lint {
+        // raw/privkey is the public Android Auto head-unit TLS key the protocol requires,
+        // not a secret of ours.
+        disable += "PackagedPrivateKey"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
