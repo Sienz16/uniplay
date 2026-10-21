@@ -5,38 +5,33 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Android Min SDK](https://img.shields.io/badge/Min%20SDK-21%20(Lollipop)-green.svg)](https://developer.android.com)
 [![Android Target SDK](https://img.shields.io/badge/Target%20SDK-34%20(Android%2014)-brightgreen.svg)](https://developer.android.com)
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.0.21-purple.svg)](https://kotlinlang.org)
+[![Kotlin](https://img.shields.io/badge/Kotlin-1.9.24-purple.svg)](https://kotlinlang.org)
 [![Gradle](https://img.shields.io/badge/Gradle-8.13-blueviolet.svg)](https://gradle.org)
 [![Platform](https://img.shields.io/badge/Platform-Automotive%20Head%20Units%20(1GB%20RAM)-orange.svg)]()
 
-**Uniplay** is an ultra-lean, modular, unified Apple CarPlay and Google Android Auto software receiver engine engineered specifically for entry-level automotive Android head units. It is designed from the ground up to operate reliably on constrained hardware environments (**1GB RAM / 16GB Storage**, UIS8581A, Allwinner, MTK, BYD DiLink, and generic aftermarket head units) without triggering the Android Low Memory Killer (LMK).
+**Uniplay** is a wireless and USB **Android Auto** receiver for Android head units, aimed at entry-level hardware with little RAM. It shows your phone's Android Auto on the head unit's screen. Apple CarPlay is **not** supported yet.
+
+> [!WARNING]
+> **Early alpha.** It builds and passes its unit tests in CI, but it has had very little testing on real head units. Expect bugs. The released APK is signed with a debug key, so it is for testing only. Do not use it while driving.
+
+## ⬇️ Download
+
+Get the latest APK from the [Releases page](https://github.com/Sienz16/uniplay/releases/latest) and sideload it onto your head unit (see [Building & Installing](#️-building--installing)).
+
+### How connecting works
+- **Wireless (automatic):** pair your phone with the head unit over Bluetooth once. Uniplay starts its own hotspot where the head unit allows it (otherwise it asks for your hotspot name and password), tells the phone which Wi-Fi to join, and the phone connects. No developer mode is needed.
+- **USB:** plug the phone in. Uniplay switches it into Android Open Accessory mode.
+- **Manual fallback:** turn on Developer mode in the Android Auto app on the phone, start its head unit server, and tap "Connect manually".
 
 ---
 
-## ⚡ Architectural Highlights
+## ⚡ Design Goals
 
-1. **Zero-Copy Video Pipeline**:
-   - Video frames (H.264 NAL units) bypass JVM memory allocations and intermediate `Bitmap` / `byte[]` arrays entirely.
-   - Feeds directly into hardware `MediaCodec` and outputs natively onto an `ANativeWindow` (`SurfaceView`), keeping video memory consumption **under 10MB RAM**.
-
-2. **Lean Audio Ringbuffer**:
-   - Ultra-low latency `AudioTrack` direct streaming ringbuffer.
-   - Bounded buffer allocations with total audio memory overhead **under 2MB**.
-   - Multi-channel stream separation (Media Audio vs. Navigation / Voice Assistant).
-
-3. **MemoryGuard (LMK Defense Engine)**:
-   - Proactive daemon monitoring system cgroups and available RAM thresholds.
-   - Intercepts memory pressure events before the Linux kernel Low Memory Killer (LMK) sends `SIGKILL` to the projection process.
-
-4. **Unified Hardware Dispatcher (`DeviceRouter`)**:
-   - Automatic USB attachment detection and VID/PID routing:
-     - **VID `0x05AC`**: Apple iPhone -> CarPlay protocol engine.
-     - **VID `0x18D1`**: Google AOA -> Android Auto protocol engine.
-   - Enforces a strict single-session rule to prevent concurrent CPU/GPU resource contention.
-
-5. **Pure Native UI (No Framework Bloat)**:
-   - Zero Jetpack Compose overhead, minimal AndroidX dependencies.
-   - Pure XML layout with a single fullscreen hardware `SurfaceView`.
+1. **Low-latency video:** H.264 access units go straight to a hardware `MediaCodec` that renders onto a `SurfaceView`. Decoding and output run on their own threads, and the decoder skips ahead to the newest frame instead of replaying a backlog.
+2. **Never block the link:** all sending goes through one ordered thread, audio plays from its own thread, and touch moves are coalesced so a drag never queues stale positions.
+3. **Fits any screen:** the phone is told the head unit's real screen shape, so the picture is not stretched. A "Wide 16:9" mode is available if you prefer Android Auto's side-by-side layout.
+4. **Memory-conscious:** small bounded buffers, and a `MemoryGuard` that watches for low-memory conditions.
+5. **Plain native UI:** XML layouts, no Jetpack Compose.
 
 ---
 
@@ -74,23 +69,16 @@ uniplay/
 
 ---
 
-## 📊 Current Development Status
+## 📊 Current Status
 
-> [!NOTE]
-> Uniplay has completed its initial architectural scaffolding, core media decoder pipeline, and build system configuration. Both Debug and Release builds (with R8 code shrinking and optimization) compile successfully.
-
-| Component | Status | Description |
+| Area | Status | Notes |
 | :--- | :---: | :--- |
-| **Gradle Build Pipeline** | ✅ Ready | Builds cleanly with Gradle 8.13 and Android SDK 34. |
-| **R8 / ProGuard Optimization** | ✅ Ready | Full code shrinking and resource optimization verified. |
-| **ZeroCopyVideoDecoder** | ✅ Ready | `MediaCodec` decoder bound to native `SurfaceView`. |
-| **LeanAudioTrack** | ✅ Ready | Low-overhead streaming audio pipeline for Media & Nav. |
-| **MemoryGuard** | ✅ Ready | Real-time RAM compaction and LMK mitigation daemon. |
-| **USB Device Routing Filter** | ✅ Ready | XML hardware filters configured for Apple & Google VIDs. |
-| **USB Transport Layer** | 🧪 Untested | AOA 2.0 switch and bulk transport for Android Auto are written; needs hardware testing. |
-| **Google AOA 2.0 Handshake** | 🔄 In Progress | Porting accessory mode switching and AASDK SSL channel. |
-| **Apple AirPlay / iAP2 Seam** | ⛔ Not working | Porting RTSP session negotiation and decryption seam. |
-| **Touch / Key Backpropagation**| 🔄 In Progress | Connecting touch events from `SurfaceView` back to phone. |
+| **Build & unit tests (CI)** | ✅ Working | Debug unit tests and the release build run on every push. |
+| **Android Auto, wireless** | 🧪 Early testing | Bluetooth handoff, Wi-Fi join and streaming work in basic testing on one setup; broader testing is needed. |
+| **Android Auto, USB** | 🧪 Untested | AOA switch and bulk transport are written but have not been tried on hardware. |
+| **Video decode, audio, touch** | 🧪 Early testing | Smooth in first tests; behaviour varies by head unit. |
+| **GPS passthrough** | 🧪 Untested | Sends the head unit's GPS to the phone when one is available. |
+| **Apple CarPlay** | ⛔ Not available | The engine is a placeholder; real CarPlay needs an authenticated AirPlay/iAP2 stack. |
 
 ---
 
@@ -98,7 +86,7 @@ uniplay/
 
 | Standard | Vendor ID (VID) | Product ID (PID) | Connection Protocol |
 | :--- | :--- | :--- | :--- |
-| **Apple CarPlay** | `0x05AC` (1452) | Various (iPhone) | USB NCM / Bulk iAP2 / AirPlay |
+| **Apple CarPlay** | `0x05AC` (1452) | Various (iPhone) | Not supported yet |
 | **Android Auto (AOA)** | `0x18D1` (6353) | `0x2D00` / `0x2D01` | Google Android Open Accessory 2.0 |
 
 ---
